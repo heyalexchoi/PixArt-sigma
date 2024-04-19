@@ -174,7 +174,7 @@ def extract_img_vae_multiscale(batch_size=1):
     os.umask(0o000)  # file permission: 666; dir permission: 777
     os.makedirs(vae_save_root, exist_ok=True)
     accelerator = Accelerator(mixed_precision='fp16')
-    vae = AutoencoderKL.from_pretrained(f'{args.pretrained_models_dir}/sd-vae-ft-ema').to(device)
+    vae = AutoencoderKL.from_pretrained(f'{args.vae_models_dir}', torch_dtype=torch.float16).to(device)
 
     signature = get_vae_signature(resolution=image_resize, is_multiscale=True)
     
