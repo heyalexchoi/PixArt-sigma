@@ -64,7 +64,7 @@ def get_vae_signature(resolution, is_multiscale, vae_type):
     signature = f"{first_part}-{resolution}"
     if vae_type == 'sdxl':
         return f"sdxl-{signature}"
-    if vae_type is 'ldm':
+    if vae_type == 'ldm':
         return signature
     else:
         raise ValueError(f"Unknown VAE type {vae_type}")

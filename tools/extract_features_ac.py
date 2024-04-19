@@ -74,6 +74,7 @@ class DatasetMS(InternalData):
                     # this dataset seems to be for multiscale vae extraction only
                     output_file_path = get_vae_feature_path(
                         resolution=image_resize,
+                        vae_type=vae_type,
                         is_multiscale=multi_scale,
                         vae_save_root=vae_save_root, 
                         image_path=sample_path,
@@ -115,6 +116,7 @@ class DatasetMS(InternalData):
                     assert h, w == (self.meta_data_clean[idx]['height'], self.meta_data_clean[idx]['width'])
                     closest_size, closest_ratio = get_closest_ratio(h, w, self.aspect_ratio)
                     closest_size = list(map(lambda x: int(x), closest_size))
+                    # TODO: skip closest size etc for non multiscale
                     transform = T.Compose([
                         T.Lambda(lambda img: img.convert('RGB')),
                         # TODO maybe: use single dimension to resize preserving aspect ratio. current 2 dimension resize can warp image.
@@ -377,7 +379,7 @@ if __name__ == '__main__':
         if not multi_scale:
             # basically seemed like the two did the same thing except one code path was shittier
             # and the non-multi-scale cropped to square instead of looking for nearest aspect ratio
-            logger.warning('Single scale feature extraction is not supported currently. Images not be forced into squares.')
+            logger.warning('Single scale feature extraction is not supported currently. Images will not be forced into squares.')
 
         # recommend bs = 1 for AspectRatioBatchSampler
         # not sure why bs = 1 is recommended. bigger batches are used in training. try higher.
