@@ -45,7 +45,9 @@ def get_closest_ratio(height: float, width: float, ratios: dict):
 # VAE feature extraction
 @DATASETS.register_module()
 class DatasetMS(InternalData):
-    def __init__(self, root, image_list_json=None, transform=None, load_vae_feat=False, aspect_ratio_type=None, start_index=0, end_index=100000000, **kwargs):
+    def __init__(self, root, multi_scale, image_list_json=None, transform=None, 
+                 load_vae_feat=False, aspect_ratio_type=None, start_index=0,
+                 end_index=100000000, **kwargs):
         if image_list_json is None:
             image_list_json = ['data_info.json']
         assert os.path.isabs(root), 'root must be a absolute path'
@@ -146,7 +148,7 @@ def save_results(results, paths, vae_save_root):
     for res, p in zip(results, paths):
         output_path = get_vae_feature_path(
             vae_save_root=vae_save_root,
-            multi_scale=multi_scale,
+            is_multiscale=multi_scale,
             resolution=image_resize,
             vae_type=vae_type,
             image_path=p,
@@ -160,6 +162,11 @@ def save_results(results, paths, vae_save_root):
         new_paths.append(os.path.join(dirname_base, filename))
         np.save(output_path, res)
     # save paths
+    signature = get_vae_signature(
+        resolution=image_resize,
+        is_multiscale=multi_scale,
+        vae_type=vae_type,
+    )
     with open(os.path.join(vae_save_root, f"VAE-{signature}.txt"), 'a') as f:
         f.write('\n'.join(new_paths) + '\n')
 
@@ -189,7 +196,9 @@ def extract_img_vae_multiscale(batch_size=1):
         1024: ASPECT_RATIO_1024
     }[image_resize]
     dataset = DatasetMS(dataset_root, image_list_json=[json_file], transform=None, sample_subset=None,
-                        aspect_ratio_type=aspect_ratio_type, start_index=start_index, end_index=end_index,)
+                        aspect_ratio_type=aspect_ratio_type, start_index=start_index, end_index=end_index,
+                        multi_scale=multi_scale,
+                        )
 
     # create AspectRatioBatchSampler
     sampler = AspectRatioBatchSampler(sampler=RandomSampler(dataset), dataset=dataset, batch_size=batch_size, aspect_ratios=dataset.aspect_ratio, ratio_nums=dataset.ratio_nums)
