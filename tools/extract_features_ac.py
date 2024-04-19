@@ -27,13 +27,15 @@ from diffusion.utils.misc import SimpleTimer
 from diffusion.utils.data_sampler import AspectRatioBatchSampler
 from diffusion.data.builder import DATASETS
 from diffusion.data import ASPECT_RATIO_512, ASPECT_RATIO_1024, ASPECT_RATIO_256
-from diffusion.data.datasets.utils import get_vae_feature_path, get_t5_feature_path, get_vae_signature
+from diffusion.data.datasets.utils_ac import get_vae_feature_path, get_t5_feature_path, get_vae_signature
 from diffusion.utils.dist_utils import flush
 
 from concurrent.futures import ProcessPoolExecutor, wait, as_completed
 
 
 logger = get_logger(__name__)
+
+sdxl_vae_path = 'madebyollin/sdxl-vae-fp16-fix'
 
 def get_closest_ratio(height: float, width: float, ratios: dict):
     aspect_ratio = height / width
@@ -70,11 +72,11 @@ class DatasetMS(InternalData):
                 if item['ratio'] <= 4:
                     sample_path = os.path.join(self.root, item['path'])
                     # this dataset seems to be for multiscale vae extraction only
-                    signature = get_vae_signature(resolution=image_resize, is_multiscale=True)
                     output_file_path = get_vae_feature_path(
+                        resolution=image_resize,
+                        is_multiscale=multi_scale,
                         vae_save_root=vae_save_root, 
                         image_path=sample_path,
-                        signature=signature,
                         relative_root_dir=self.root,
                         )
                     if not os.path.exists(output_file_path):
@@ -115,6 +117,7 @@ class DatasetMS(InternalData):
                     closest_size = list(map(lambda x: int(x), closest_size))
                     transform = T.Compose([
                         T.Lambda(lambda img: img.convert('RGB')),
+                        # TODO maybe: use single dimension to resize preserving aspect ratio. current 2 dimension resize can warp image.
                         T.Resize(closest_size, interpolation=InterpolationMode.BICUBIC),  # Image.BICUBIC
                         T.CenterCrop(closest_size),
                         T.ToTensor(),
@@ -134,15 +137,17 @@ class DatasetMS(InternalData):
         data_info = self.meta_data_clean[idx]
         return {'height': data_info['height'], 'width': data_info['width']}
 
-def save_results(results, paths, signature, vae_save_root):
+def save_results(results, paths, vae_save_root):
     # save to npy
     new_paths = []
     os.umask(0o000)  # file permission: 666; dir permission: 777
     for res, p in zip(results, paths):
         output_path = get_vae_feature_path(
-            vae_save_root=vae_save_root, 
-            image_path=p, 
-            signature=signature,
+            vae_save_root=vae_save_root,
+            multi_scale=multi_scale,
+            resolution=image_resize,
+            vae_type=vae_type,
+            image_path=p,
             relative_root_dir=dataset_root,
             )
         dirname = os.path.dirname(output_path)
@@ -156,7 +161,7 @@ def save_results(results, paths, signature, vae_save_root):
     with open(os.path.join(vae_save_root, f"VAE-{signature}.txt"), 'a') as f:
         f.write('\n'.join(new_paths) + '\n')
 
-def inference(vae, dataloader, signature, vae_save_root):
+def inference(vae, dataloader, vae_save_root):
     timer = SimpleTimer(len(dataloader), log_interval=1, desc="VAE-Inference")
 
     for batch in dataloader:
@@ -165,7 +170,7 @@ def inference(vae, dataloader, signature, vae_save_root):
                 posterior = vae.encode(batch[0]).latent_dist
                 results = torch.cat([posterior.mean, posterior.std], dim=1).detach().cpu().numpy()
         path = batch[1]
-        save_results(results, path, signature=signature, vae_save_root=vae_save_root)
+        save_results(results=results, paths=path, vae_save_root=vae_save_root)
         timer.log()
 
 
@@ -176,8 +181,6 @@ def extract_img_vae_multiscale(batch_size=1):
     accelerator = Accelerator(mixed_precision='fp16')
     vae = AutoencoderKL.from_pretrained(f'{args.vae_models_dir}', torch_dtype=torch.float16).to(device)
 
-    signature = get_vae_signature(resolution=image_resize, is_multiscale=True)
-    
     aspect_ratio_type = {
         256: ASPECT_RATIO_256,
         512: ASPECT_RATIO_512,
@@ -193,7 +196,7 @@ def extract_img_vae_multiscale(batch_size=1):
     dataloader = DataLoader(dataset, batch_sampler=sampler, num_workers=13, pin_memory=True)
     dataloader = accelerator.prepare(dataloader, )
 
-    inference(vae, dataloader, signature=signature, vae_save_root=vae_save_root)
+    inference(vae, dataloader, vae_save_root=vae_save_root)
     accelerator.wait_for_everyone()
     logger.info('finished extract_img_vae_multiscale')
 
@@ -311,7 +314,7 @@ def get_args():
         '--t5_models_dir', default='PixArt-alpha/PixArt-XL-2-1024-MS', type=str
     )
     parser.add_argument(
-        '--vae_models_dir', default='madebyollin/sdxl-vae-fp16-fix', type=str
+        '--vae_models_dir', default=sdxl_vae_path, type=str
     )
     parser.add_argument('--skip_t5', action='store_true', default=False, help="skip t5 feature extraction")
     parser.add_argument('--skip_vae', action='store_true', default=False, help="skip vae feature extraction")
@@ -329,6 +332,9 @@ if __name__ == '__main__':
     multi_scale = args.multi_scale
     vae_save_root = os.path.abspath(args.vae_save_root)
     t5_save_dir = args.t5_save_root
+    if not args.vae_models_dir == sdxl_vae_path:
+        raise ValueError(f"Unhandled VAE model: {args.vae_models_dir}")
+    vae_type = 'sdxl'
     
     json_file = args.json_file
     json_path = json_file # pretty sure this is just duplicate. can clean this up later
