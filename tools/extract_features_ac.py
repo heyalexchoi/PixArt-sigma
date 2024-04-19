@@ -332,8 +332,9 @@ if __name__ == '__main__':
     multi_scale = args.multi_scale
     vae_save_root = os.path.abspath(args.vae_save_root)
     t5_save_dir = args.t5_save_root
-    if not args.vae_models_dir == sdxl_vae_path:
-        raise ValueError(f"Unhandled VAE model: {args.vae_models_dir}")
+    vae_models_dir = args.vae_models_dir
+    if not vae_models_dir == sdxl_vae_path:
+        raise ValueError(f"Unhandled VAE model: {vae_models_dir}")
     vae_type = 'sdxl'
     
     json_file = args.json_file
@@ -372,7 +373,7 @@ if __name__ == '__main__':
         # prepare extracted image vae features for training
         logger.info(f"Extracting VAE features for {json_path}\nmulti_scale: {multi_scale}\
                     \nimage_resize: {image_resize}\nDevice: {device}\nBatch Size: {vae_batch_size}\
-                    \nSave to: {vae_save_root}")
+                    \nvae_models_dir: {vae_models_dir} vae_type: {vae_type} Save to: {vae_save_root}")
         if not multi_scale:
             # basically seemed like the two did the same thing except one code path was shittier
             # and the non-multi-scale cropped to square instead of looking for nearest aspect ratio
