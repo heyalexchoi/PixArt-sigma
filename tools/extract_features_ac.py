@@ -19,7 +19,7 @@ from accelerate import Accelerator
 from torchvision.transforms.functional import InterpolationMode
 from torchvision.datasets.folder import default_loader
 
-from diffusion.utils.logger import get_logger
+from diffusion.utils.logger_ac import get_logger
 from diffusers.models import AutoencoderKL
 from transformers import T5Tokenizer, T5EncoderModel
 from diffusion.data.datasets.InternalData import InternalData
