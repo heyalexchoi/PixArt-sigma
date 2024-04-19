@@ -365,6 +365,7 @@ if __name__ == '__main__':
     # make sure not parallelizing any tokenization in my code.
     os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
+    t5_save_futures = None
     if not args.skip_t5:
         # prepare extracted caption t5 features for training
         logger.info(f"Extracting T5 features for {json_path}\nMax token length: {t5_max_token_length}\
@@ -394,13 +395,14 @@ if __name__ == '__main__':
         # not sure why bs = 1 is recommended. bigger batches are used in training. try higher.
         extract_img_vae_multiscale(batch_size=vae_batch_size)
     
-     # Use tqdm with as_completed to show progress
-    for future in tqdm(as_completed(t5_save_futures), total=len(t5_save_futures), desc="T5 Save Embeds"):
-        try:
-            result = future.result()
-            # Optionally process or log result here
-        except Exception as exc:
-            print(f"T5 Save Embedding Task generated an exception: {exc}")
+    if t5_save_futures:
+        # Use tqdm with as_completed to show progress
+        for future in tqdm(as_completed(t5_save_futures), total=len(t5_save_futures), desc="T5 Save Embeds"):
+            try:
+                result = future.result()
+                # Optionally process or log result here
+            except Exception as exc:
+                print(f"T5 Save Embedding Task generated an exception: {exc}")
 
-    # wait for all_save_futures 
-    done, not_done = wait(t5_save_futures)  # This will block until all futures are done
+        # wait for all_save_futures 
+        done, not_done = wait(t5_save_futures)  # This will block until all futures are done
