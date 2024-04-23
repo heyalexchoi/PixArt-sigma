@@ -7,7 +7,7 @@ import types
 import warnings
 import hashlib
 from pathlib import Path
-
+from tqdm import tqdm
 import numpy as np
 import torch
 from transformers import T5EncoderModel, T5Tokenizer
@@ -60,8 +60,10 @@ def encode_prompts(prompts, pipeline_load_from, device, batch_size, max_token_le
         device=device,
     )
 
-    for i in range(0, len(need_encoding), batch_size):
-        batch_prompts = need_encoding[i:i+batch_size]
+    batches = [need_encoding[i:i + batch_size] for i in range(0, len(need_encoding), batch_size)]
+
+    for i in tqdm(range(len(batches)), desc='text encoding batches'):
+        batch_prompts = batches[i]
         batch_txt_tokens = tokenizer(
                 batch_prompts, max_length=max_token_length, padding="max_length", truncation=True, return_tensors="pt"
             ).to(device)
@@ -81,3 +83,4 @@ def encode_prompts(prompts, pipeline_load_from, device, batch_size, max_token_le
                 'prompt_embeds': prompt_embeds,
                 'prompt_attention_mask': prompt_attention_mask,
             }, save_path)
+    logger.info(f'encode_prompts finished. encoded and saved {len(need_encoding)} prompts')
