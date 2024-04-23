@@ -21,11 +21,13 @@ from PIL import Image
 from torch.utils.data import RandomSampler
 
 # probably have to import my dataset so that build_dataset can find it?
+from diffusion.data.datasets.InternalData_ms_ac import InternalDataMSSigmaAC
 
 from diffusion import IDDPM, DPMS
 from diffusion.data.builder import build_dataset, build_dataloader, set_data_root
 from diffusion.model.builder import build_model
-from diffusion.utils.checkpoint import save_checkpoint, load_checkpoint
+from diffusion.utils.checkpoint import save_checkpoint
+from diffusion.utils.checkpoint_ac import load_checkpoint
 from diffusion.utils.data_sampler import AspectRatioBatchSampler
 from diffusion.utils.dist_utils import synchronize, get_world_size, clip_grad_norm_, flush
 from diffusion.utils.logger import get_root_logger, rename_file_with_creation_time
@@ -33,8 +35,14 @@ from diffusion.utils.lr_scheduler import build_lr_scheduler
 from diffusion.utils.misc import set_random_seed, read_config, init_random_seed, DebugUnderflowOverflow
 from diffusion.utils.optimizer import build_optimizer, auto_scale_lr
 
+from diffusion.utils.text_embeddings import encode_prompts, get_path_for_encoded_prompt
+
 warnings.filterwarnings("ignore")  # ignore warning
 
+def wait_for_everyone():
+    # possible issue with accelerator.wait_for_everyone() breaking on linux kernel < 5.5
+    # https://github.com/huggingface/accelerate/issues/1929
+    synchronize()
 
 def set_fsdp_env():
     os.environ["ACCELERATE_USE_FSDP"] = 'true'
@@ -45,12 +53,16 @@ def set_fsdp_env():
 
 @torch.inference_mode()
 def log_validation(model, step, device, vae=None):
+    image_size = config.image_size
     torch.cuda.empty_cache()
     model = accelerator.unwrap_model(model).eval()
-    hw = torch.tensor([[1024, 1024]], dtype=torch.float, device=device).repeat(1, 1)
+    hw = torch.tensor([[image_size, image_size]], dtype=torch.float, device=device).repeat(1, 1)
     ar = torch.tensor([[1.]], device=device).repeat(1, 1)
-    null_y = torch.load(f'output/pretrained_models/null_embed_diffusers_{max_length}token.pth')
-    null_y = null_y['uncond_prompt_embeds'].to(device)
+
+    null_y_path = get_path_for_encoded_prompt('', max_token_length=config.max_token_length)
+
+    null_y = torch.load(null_y_path)
+    null_y = null_y['prompt_embeds'].to(device)
 
     # Create sampling noise:
     logger.info("Running validation... ")
@@ -64,14 +76,16 @@ def log_validation(model, step, device, vae=None):
         # caption_embs = caption_embs[:, None]
         # emb_masks = emb_masks[:, None]
         model_kwargs = dict(data_info={'img_hw': hw, 'aspect_ratio': ar}, mask=emb_masks)
-
+        # TODO: batch inference?
         dpm_solver = DPMS(model.forward_with_dpmsolver,
                           condition=caption_embs,
                           uncondition=null_y,
+                          # TODO: adjustable CFG
                           cfg_scale=4.5,
                           model_kwargs=model_kwargs)
         denoised = dpm_solver.sample(
             z,
+            # TODO: adjustable steps
             steps=14,
             order=2,
             skip_type="time_uniform",
@@ -343,61 +357,23 @@ if __name__ == '__main__':
     learn_sigma = getattr(config, 'learn_sigma', True) and pred_sigma
     max_length = config.model_max_length
     kv_compress_config = config.kv_compress_config if config.kv_compress else None
-    vae = None
-    if not config.data.load_vae_feat:
-        vae = AutoencoderKL.from_pretrained(config.vae_pretrained, torch_dtype=torch.float16).to(accelerator.device)
-        config.scale_factor = vae.config.scaling_factor
-    tokenizer = text_encoder = None
-    if not config.data.load_t5_feat:
-        tokenizer = T5Tokenizer.from_pretrained(args.pipeline_load_from, subfolder="tokenizer")
-        text_encoder = T5EncoderModel.from_pretrained(
-            args.pipeline_load_from, subfolder="text_encoder", torch_dtype=torch.float16).to(accelerator.device)
 
     logger.info(f"vae scale factor: {config.scale_factor}")
 
-    if config.visualize:
+    if (config.eval or config.resume_from) and accelerator.is_main_process:
         # preparing embeddings for visualization. We put it here for saving GPU memory
-        validation_prompts = [
-            "dog",
-            "portrait photo of a girl, photograph, highly detailed face, depth of field",
-            "Self-portrait oil painting, a beautiful cyborg with golden hair, 8k",
-            "Astronaut in a jungle, cold color palette, muted colors, detailed, 8k",
-            "A photo of beautiful mountain with realistic sunset and blue lake, highly detailed, masterpiece",
-        ]
-        skip = True
-        Path('output/tmp').mkdir(parents=True, exist_ok=True)
-        for prompt in validation_prompts:
-            if not (os.path.exists(f'output/tmp/{prompt}_{max_length}token.pth')
-                    and os.path.exists(f'output/pretrained_models/null_embed_diffusers_{max_length}token.pth')):
-                skip = False
-                logger.info("Preparing Visualization prompt embeddings...")
-                break
-        if accelerator.is_main_process and not skip:
-            if config.data.load_t5_feat and (tokenizer is None or text_encoder is None):
-                logger.info(f"Loading text encoder and tokenizer from {args.pipeline_load_from} ...")
-                tokenizer = T5Tokenizer.from_pretrained(args.pipeline_load_from, subfolder="tokenizer")
-                text_encoder = T5EncoderModel.from_pretrained(
-                    args.pipeline_load_from, subfolder="text_encoder", torch_dtype=torch.float16).to(accelerator.device)
-            for prompt in validation_prompts:
-                txt_tokens = tokenizer(
-                    prompt, max_length=max_length, padding="max_length", truncation=True, return_tensors="pt"
-                ).to(accelerator.device)
-                caption_emb = text_encoder(txt_tokens.input_ids, attention_mask=txt_tokens.attention_mask)[0]
-                torch.save(
-                    {'caption_embeds': caption_emb, 'emb_mask': txt_tokens.attention_mask},
-                    f'output/tmp/{prompt}_{max_length}token.pth')
-            null_tokens = tokenizer(
-                "", max_length=max_length, padding="max_length", truncation=True, return_tensors="pt"
-            ).to(accelerator.device)
-            null_token_emb = text_encoder(null_tokens.input_ids, attention_mask=null_tokens.attention_mask)[0]
-            torch.save(
-                {'uncond_prompt_embeds': null_token_emb, 'uncond_prompt_embeds_mask': null_tokens.attention_mask},
-                f'output/pretrained_models/null_embed_diffusers_{max_length}token.pth')
-            if config.data.load_t5_feat:
-                del tokenizer
-                del text_encoder
-            flush()
-
+        eval_config = config.eval
+        # load checkpoint, log eval images use null embed
+        eval_prompts = eval_config.prompts or []
+        prompts = [*eval_prompts, '']
+        encode_prompts(
+            prompts=prompts,
+            pipeline_load_from=eval_config.pipeline_load_from,
+            device=accelerator.device,
+            batch_size=eval_config.batch_size,
+            max_token_length=eval_config.max_token_length,
+        )
+        
     model_kwargs = {"pe_interpolation": config.pe_interpolation, "config": config,
                     "model_max_length": max_length, "qk_norm": config.qk_norm,
                     "kv_compress_config": kv_compress_config, "micro_condition": config.micro_condition}
@@ -453,13 +429,13 @@ if __name__ == '__main__':
     if accelerator.is_main_process:
         tracker_config = dict(vars(config))
         try:
-            accelerator.init_trackers(args.tracker_project_name, tracker_config)
+            accelerator.init_trackers(config.tracker_project_name, tracker_config)
         except:
             accelerator.init_trackers(f"tb_{timestamp}")
 
     start_epoch = 0
     start_step = 0
-    skip_step = config.skip_step
+    skip_step = config.skip_step or 0
     total_steps = len(train_dataloader) * config.num_epochs
 
     if config.resume_from is not None and config.resume_from['checkpoint'] is not None:

@@ -12,6 +12,7 @@ import numpy as np
 import torch
 from transformers import T5EncoderModel, T5Tokenizer
 
+from diffusion.utils.dist_utils import flush
 from diffusion.utils.logger_ac import get_logger
 
 
@@ -83,4 +84,7 @@ def encode_prompts(prompts, pipeline_load_from, device, batch_size, max_token_le
                 'prompt_embeds': prompt_embeds,
                 'prompt_attention_mask': prompt_attention_mask,
             }, save_path)
+    del tokenizer
+    del text_encoder
+    flush()
     logger.info(f'encode_prompts finished. encoded and saved {len(need_encoding)} prompts')

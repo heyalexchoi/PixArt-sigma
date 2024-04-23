@@ -16,7 +16,6 @@ def get_closest_ratio(height: float, width: float, ratios: dict):
     closest_ratio = min(ratios.keys(), key=lambda ratio: abs(float(ratio) - aspect_ratio))
     return ratios[closest_ratio], float(closest_ratio)
 
-
 @DATASETS.register_module()
 class InternalDataMS(InternalData):
     def __init__(self,
