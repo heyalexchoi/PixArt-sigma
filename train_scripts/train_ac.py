@@ -35,7 +35,10 @@ from diffusion.utils.lr_scheduler import build_lr_scheduler
 from diffusion.utils.misc import set_random_seed, read_config, init_random_seed, DebugUnderflowOverflow
 from diffusion.utils.optimizer import build_optimizer, auto_scale_lr
 
+import wandb
+import json
 from diffusion.utils.text_embeddings import encode_prompts, get_path_for_encoded_prompt
+from diffusion.utils.image_evaluation import generate_images
 
 warnings.filterwarnings("ignore")  # ignore warning
 
@@ -50,89 +53,223 @@ def set_fsdp_env():
     os.environ["FSDP_BACKWARD_PREFETCH"] = 'BACKWARD_PRE'
     os.environ["FSDP_TRANSFORMER_CLS_TO_WRAP"] = 'PixArtBlock'
 
-
 @torch.inference_mode()
-def log_validation(model, step, device, vae=None):
-    image_size = config.image_size
-    torch.cuda.empty_cache()
-    model = accelerator.unwrap_model(model).eval()
-    hw = torch.tensor([[image_size, image_size]], dtype=torch.float, device=device).repeat(1, 1)
-    ar = torch.tensor([[1.]], device=device).repeat(1, 1)
+def log_eval_images(pipeline, global_step):
+    wait_for_everyone()
+    if not accelerator.is_main_process:
+        return
+    flush()
+    logger.info("Generating eval images... ")
 
-    null_y_path = get_path_for_encoded_prompt('', max_token_length=config.max_token_length)
+    batch_size = config.eval.batch_size
+    seed = config.eval.get('seed', 0)
+    guidance_scale = config.eval.guidance_scale
+    eval_sample_prompts = config.eval.prompts
 
-    null_y = torch.load(null_y_path)
-    null_y = null_y['prompt_embeds'].to(device)
-
-    # Create sampling noise:
-    logger.info("Running validation... ")
+    prompt_embeds_list = []
+    prompt_attention_mask_list = []
     image_logs = []
-    latents = []
+    images = []
+    for prompt in eval_sample_prompts:
+        prompt_embed_dict = torch.load(
+                get_path_for_encoded_prompt(prompt, max_length),
+                map_location='cpu'
+                )
+        prompt_embeds_list.append(prompt_embed_dict['prompt_embeds'])
+        prompt_attention_mask_list.append(prompt_embed_dict['prompt_attention_mask'])
+    
+    prompt_embeds = torch.stack(prompt_embeds_list)
+    prompt_attention_mask = torch.stack(prompt_attention_mask_list)
 
-    for prompt in validation_prompts:
-        z = torch.randn(1, 4, latent_size, latent_size, device=device)
-        embed = torch.load(f'output/tmp/{prompt}_{max_length}token.pth', map_location='cpu')
-        caption_embs, emb_masks = embed['caption_embeds'].to(device), embed['emb_mask'].to(device)
-        # caption_embs = caption_embs[:, None]
-        # emb_masks = emb_masks[:, None]
-        model_kwargs = dict(data_info={'img_hw': hw, 'aspect_ratio': ar}, mask=emb_masks)
-        # TODO: batch inference?
-        dpm_solver = DPMS(model.forward_with_dpmsolver,
-                          condition=caption_embs,
-                          uncondition=null_y,
-                          # TODO: adjustable CFG
-                          cfg_scale=4.5,
-                          model_kwargs=model_kwargs)
-        denoised = dpm_solver.sample(
-            z,
-            # TODO: adjustable steps
-            steps=14,
-            order=2,
-            skip_type="time_uniform",
-            method="multistep",
-        )
-        latents.append(denoised)
+    images = generate_images(
+        pipeline=pipeline,
+        prompt_embeds=prompt_embeds,
+        prompt_attention_mask=prompt_attention_mask,
+        batch_size=batch_size,
+        num_inference_steps=config.eval.num_inference_steps,
+        width=config.image_size,
+        height=config.image_size,
+        seed=seed,
+        guidance_scale=guidance_scale,
+    )
 
-    torch.cuda.empty_cache()
-    if vae is None:
-        vae = AutoencoderKL.from_pretrained(config.vae_pretrained).to(accelerator.device).to(torch.float16)
-    for prompt, latent in zip(validation_prompts, latents):
-        latent = latent.to(torch.float16)
-        samples = vae.decode(latent.detach() / vae.config.scaling_factor).sample
-        samples = torch.clamp(127.5 * samples + 128.0, 0, 255).permute(0, 2, 3, 1).to("cpu", dtype=torch.uint8).numpy()[0]
-        image = Image.fromarray(samples)
-        image_logs.append({"validation_prompt": prompt, "images": [image]})
+    flush()
+
+    logger.info('finished generating eval images. logging...')
+    for prompt, image in zip(eval_sample_prompts, images):
+        image_logs.append({"prompt": prompt, "image": image})
 
     for tracker in accelerator.trackers:
-        if tracker.name == "tensorboard":
-            for log in image_logs:
-                images = log["images"]
-                validation_prompt = log["validation_prompt"]
-                formatted_images = []
-                for image in images:
-                    formatted_images.append(np.asarray(image))
-
-                formatted_images = np.stack(formatted_images)
-
-                tracker.writer.add_images(validation_prompt, formatted_images, step, dataformats="NHWC")
-        elif tracker.name == "wandb":
-            import wandb
+        if tracker.name == "wandb":  
             formatted_images = []
-
-            for log in image_logs:
-                images = log["images"]
-                validation_prompt = log["validation_prompt"]
-                for image in images:
-                    image = wandb.Image(image, caption=validation_prompt)
-                    formatted_images.append(image)
-
-            tracker.log({"validation": formatted_images})
+            for image_log in image_logs:
+                image = image_log['image']
+                prompt = image_log['prompt']
+                image = wandb.Image(image, caption=prompt)
+                formatted_images.append(image)
+                    
+            tracker.log(
+                {"eval_images": formatted_images},
+                step=global_step,
+                )
         else:
             logger.warn(f"image logging not implemented for {tracker.name}")
 
-    del vae
-    flush()
     return image_logs
+
+
+@torch.inference_mode()
+def log_validation_loss(model, global_step):
+    if not val_dataloader:
+        logger.warning("No validation data provided. Skipping validation.")
+        return
+    
+    model.eval()
+    validation_losses = []
+
+    for batch in val_dataloader:
+        z = batch[0]
+        latents = (z * config.scale_factor)
+        # y = batch[1].squeeze(1)
+        # y_mask = batch[2].squeeze(1).squeeze(1)
+        y = batch[1]
+        y_mask = batch[2]
+        # data_info = {'resolution': batch[3]['img_hw'], 'aspect_ratio': batch[3]['aspect_ratio'],}
+        data_info = batch[3]
+
+        # Sample multiple timesteps for each image
+        bs = latents.shape[0]
+        timesteps = torch.randint(0, config.train_sampling_steps, (bs,), device=latents.device).long()
+
+        # Predict the noise residual and compute the validation loss
+        with accelerator.autocast():
+            loss_term = train_diffusion.training_losses(
+                model, latents, timesteps, 
+                model_kwargs=dict(y=y, mask=y_mask, data_info=data_info)
+                )
+            loss = loss_term['loss'].mean()
+            validation_losses.append(accelerator.gather(loss).cpu().numpy())
+
+    validation_loss = np.mean(validation_losses)
+    logger.info(f"Global Step {global_step}: Validation Loss: {validation_loss:.4f}")
+    accelerator.log({"validation_loss": validation_loss}, step=global_step)
+
+    model.train()
+
+def get_cmmd_train_and_val_samples():
+    if not config.cmmd:
+        logger.info("No CMMD config provided. Skipping get_cmmd_train_and_val_samples")
+        return [], []
+
+    # deterministically sample image-text pairs from train and val sets
+    def load_json(file_path):
+        with open(file_path, 'r') as f:
+            return json.load(f)
+    
+    train_items = load_json(os.path.join(config.data.root, config.cmmd.train_sample_json))
+    val_items = load_json(os.path.join(config.data.root, config.cmmd.val_sample_json))
+    
+    return train_items, val_items
+
+def log_cmmd(
+        pipeline,
+        global_step,
+        ):
+    if not config.cmmd:
+        logger.warning("No CMMD data provided. Skipping CMMD calculation.")
+        return
+    wait_for_everyone()
+    if not accelerator.is_main_process:
+        return
+    
+    data_root = config.data.root
+    t5_save_dir = config.data.t5_save_dir
+    train_items, val_items = get_cmmd_train_and_val_samples()
+
+    # generate images using the text captions
+    logger.info("Generating CMMD images using the text captions...")
+   
+    # extract saved t5 features and return 2 item tuple
+    # of batch tensors for prompt embeds and attention masks
+    def build_t5_batch_tensors_from_item_paths(paths):
+        caption_feature_list = []
+        attention_mask_list = []
+        for item_path in paths:
+            npz_path = get_t5_feature_path(
+                t5_save_dir=t5_save_dir, 
+                image_path=item_path,
+                relative_root_dir=data_root,
+                max_token_length=max_length,
+                )
+            embed_dict = np.load(npz_path)
+            caption_feature = torch.from_numpy(embed_dict['caption_feature'])
+            attention_mask = torch.from_numpy(embed_dict['attention_mask'])
+            caption_feature_list.append(caption_feature)
+            attention_mask_list.append(attention_mask)
+        return torch.stack(caption_feature_list), torch.stack(attention_mask_list)
+
+    # generate images and compute CMMD for either train or val items
+    def generate_images_and_cmmd(items):
+        caption_features, attention_masks = build_t5_batch_tensors_from_item_paths([item['path'] for item in items])
+        generated_images = generate_images(
+            pipeline=pipeline,
+            prompt_embeds=caption_features,
+            prompt_attention_mask=attention_masks,
+            batch_size=config.cmmd.image_gen_batch_size,
+            num_inference_steps=config.cmmd.num_inference_steps,
+            width=config.image_size,
+            height=config.image_size,
+            guidance_scale=config.cmmd.guidance_scale,
+        )
+        orig_image_paths = [os.path.join(data_root, item['path']) for item in items]
+        orig_images = [Image.open(image_path) for image_path in orig_image_paths]
+        cmmd_score = get_cmmd_for_images(
+            ref_images=orig_images,
+            eval_images=generated_images,
+            batch_size=config.cmmd.clip_batch_size,
+            device=accelerator.device,
+        )
+        return generated_images, cmmd_score
+    
+    generated_train_images, train_cmmd_score = generate_images_and_cmmd(train_items)
+    generated_val_images, val_cmmd_score = generate_images_and_cmmd(val_items)
+
+    for tracker in accelerator.trackers:
+        if tracker.name == 'wandb':
+            train_prompts = [item['prompt'] for item in train_items]
+            val_prompts = [item['prompt'] for item in val_items]
+            wandb_train_images = [wandb.Image(
+                image,
+                caption=prompt,
+                ) for image, prompt in zip(generated_train_images, train_prompts)]
+            wandb_val_images = [wandb.Image(
+                image,
+                caption=prompt,
+                ) for image, prompt in zip(generated_val_images, val_prompts)]
+            
+            tracker.log({
+                "generated_train_images": wandb_train_images, 
+                "generated_val_images": wandb_val_images,
+                }, 
+                step=global_step,
+                )
+        else:
+            logger.warn(f"CMMD logging not implemented for {tracker.name}")
+
+    accelerator.log({
+        "train_cmmd_score": train_cmmd_score,
+        "val_cmmd_score": val_cmmd_score,
+        }, step=global_step)
+
+def prepare_for_inference(model):
+    model = accelerator.unwrap_model(model)
+    model.eval()
+    return model
+
+def prepare_for_training(model):
+    model = accelerator.prepare(model)
+    model.train()
+    return model
 
 
 def train():
@@ -144,8 +281,6 @@ def train():
 
     global_step = start_step + 1
 
-    load_vae_feat = getattr(train_dataloader.dataset, 'load_vae_feat', False)
-    load_t5_feat = getattr(train_dataloader.dataset, 'load_t5_feat', False)
     # Now you train the model
     for epoch in range(start_epoch + 1, config.num_epochs + 1):
         data_time_start= time.time()
@@ -154,31 +289,14 @@ def train():
             if step < skip_step:
                 global_step += 1
                 continue    # skip data in the resumed ckpt
-            if load_vae_feat:
-                z = batch[0]
-            else:
-                with torch.no_grad():
-                    with torch.cuda.amp.autocast(enabled=(config.mixed_precision == 'fp16' or config.mixed_precision == 'bf16')):
-                        posterior = vae.encode(batch[0]).latent_dist
-                        if config.sample_posterior:
-                            z = posterior.sample()
-                        else:
-                            z = posterior.mode()
-
+            
+            z = batch[0]
+            
             clean_images = z * config.scale_factor
             data_info = batch[3]
 
-            if load_t5_feat:
-                y = batch[1]
-                y_mask = batch[2]
-            else:
-                with torch.no_grad():
-                    txt_tokens = tokenizer(
-                        batch[1], max_length=max_length, padding="max_length", truncation=True, return_tensors="pt"
-                    ).to(accelerator.device)
-                    y = text_encoder(
-                        txt_tokens.input_ids, attention_mask=txt_tokens.attention_mask)[0][:, None]
-                    y_mask = txt_tokens.attention_mask[:, None, None]
+            y = batch[1]
+            y_mask = batch[2]
 
             # Sample a random timestep for each image
             bs = clean_images.shape[0]
@@ -402,17 +520,36 @@ if __name__ == '__main__':
         for m in accelerator._models:
             m.clip_grad_norm_ = types.MethodType(clip_grad_norm_, m)
 
+    train_data = config.data
+    val_data = config.val_data
+
     # build dataloader
     set_data_root(config.data_root)
     dataset = build_dataset(
-        config.data, resolution=image_size, aspect_ratio_type=config.aspect_ratio_type,
+        train_data, resolution=image_size, aspect_ratio_type=config.aspect_ratio_type,
         real_prompt_ratio=config.real_prompt_ratio, max_length=max_length, config=config,
     )
+    
+    val_dataset = None
+    val_dataloader = None
+
+    if config.val_data:
+        val_dataset = build_dataset(
+            val_data, resolution=image_size, aspect_ratio_type=config.aspect_ratio_type,
+            max_length=max_length, config=config,
+        )
     if config.multi_scale:
         batch_sampler = AspectRatioBatchSampler(sampler=RandomSampler(dataset), dataset=dataset,
                                                 batch_size=config.train_batch_size, aspect_ratios=dataset.aspect_ratio, drop_last=True,
                                                 ratio_nums=dataset.ratio_nums, config=config, valid_num=config.valid_num)
         train_dataloader = build_dataloader(dataset, batch_sampler=batch_sampler, num_workers=config.num_workers)
+
+        if val_dataset:
+            val_batch_sampler = AspectRatioBatchSampler(sampler=RandomSampler(val_dataset), dataset=val_dataset,
+                                                batch_size=config.train_batch_size, aspect_ratios=dataset.aspect_ratio, drop_last=True,
+                                                ratio_nums=dataset.ratio_nums, config=config, valid_num=config.valid_num)
+            val_dataloader = build_dataloader(val_dataset, batch_sampler=val_batch_sampler, num_workers=config.num_workers)
+
     else:
         train_dataloader = build_dataloader(dataset, num_workers=config.num_workers, batch_size=config.train_batch_size, shuffle=True)
 
