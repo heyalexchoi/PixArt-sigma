@@ -39,7 +39,7 @@ from diffusion.utils.optimizer import build_optimizer, auto_scale_lr
 import wandb
 import json
 from diffusion.utils.text_embeddings import encode_prompts, get_path_for_encoded_prompt
-from diffusion.utils.image_evaluation import generate_images
+from diffusion.utils.image_evaluation import generate_images, get_image_gen_pipeline
 from diffusion.utils.cmmd import get_cmmd_for_images
 import torchvision.transforms as T
 from torchvision.transforms.functional import InterpolationMode
@@ -305,6 +305,25 @@ def train():
 
     global_step = start_step + 1
 
+    if accelerator.is_main_process:
+        pipeline = None
+        if config.eval.at_start or config.cmmd.at_start:
+            model = prepare_for_inference(model)
+            pipeline = _get_image_gen_pipeline(
+                transformer=model,
+                )
+
+        if config.eval.at_start:
+            log_eval_images(pipeline=pipeline, global_step=global_step)
+
+        if config.cmmd.at_start:
+            log_cmmd(pipeline=pipeline, global_step=global_step)
+        
+        if pipeline:
+            model = prepare_for_training(model)
+            del pipeline
+            flush()
+
     # Now you train the model
     for epoch in range(start_epoch + 1, config.num_epochs + 1):
         data_time_start= time.time()
@@ -364,34 +383,64 @@ def train():
             data_time_start = time.time()
 
             if global_step % config.save_model_steps == 0:
-                accelerator.wait_for_everyone()
-                if accelerator.is_main_process:
-                    os.umask(0o000)
-                    save_checkpoint(os.path.join(config.work_dir, 'checkpoints'),
-                                    epoch=epoch,
-                                    step=global_step,
-                                    model=accelerator.unwrap_model(model),
-                                    optimizer=optimizer,
-                                    lr_scheduler=lr_scheduler
-                                    )
-            if config.visualize and (global_step % config.eval_sampling_steps == 0 or (step + 1) == 1):
-                accelerator.wait_for_everyone()
-                if accelerator.is_main_process:
-                    log_validation(model, global_step, device=accelerator.device, vae=vae)
+                save_state(
+                    global_step=global_step,
+                    epoch=epoch,
+                    model=model,
+                    optimizer=optimizer,
+                    lr_scheduler=lr_scheduler,
+                )
 
-        if epoch % config.save_model_epochs == 0 or epoch == config.num_epochs:
-            accelerator.wait_for_everyone()
-            if accelerator.is_main_process:
-                os.umask(0o000)
-                save_checkpoint(os.path.join(config.work_dir, 'checkpoints'),
-                                epoch=epoch,
-                                step=global_step,
-                                model=accelerator.unwrap_model(model),
-                                optimizer=optimizer,
-                                lr_scheduler=lr_scheduler
-                                )
-        accelerator.wait_for_everyone()
+        if (config.save_model_epochs and epoch % config.save_model_epochs == 0) or epoch == config.num_epochs:
+            save_state(
+                global_step=global_step,
+                epoch=epoch,
+                model=model,
+                optimizer=optimizer,
+                lr_scheduler=lr_scheduler,
+            )
+        if (config.log_val_loss_epochs and epoch % config.log_val_loss_epochs == 0) or epoch == config.num_epochs:
+            log_validation_loss(model=model, global_step=global_step)
+        
+        should_log_eval = (config.eval.every_n_epochs and epoch % config.eval.every_n_epochs == 0) or epoch == config.num_epochs
+        should_log_cmmd = (config.cmmd.every_n_epochs and epoch % config.cmmd.every_n_epochs == 0) or epoch == config.num_epochs
 
+        if (should_log_eval or should_log_cmmd) and accelerator.is_main_process:
+            model = prepare_for_inference(model)
+            pipeline = _get_image_gen_pipeline(
+                transformer=model,
+                )
+            if should_log_eval:
+                log_eval_images(pipeline=pipeline, global_step=global_step)
+            
+            if should_log_cmmd:
+                log_cmmd(pipeline=pipeline, global_step=global_step)
+            
+            model = prepare_for_training(model)
+            del pipeline
+            flush()
+        # accelerator.wait_for_everyone()
+        # wait_for_everyone()
+
+def _get_image_gen_pipeline(transformer):
+    return get_image_gen_pipeline(
+                pipeline_load_from=config.pipeline_load_from,
+                torch_dtype=accelerator.mixed_precision,
+                device=accelerator.device,
+                transformer=transformer,
+                )
+
+def save_state(global_step, epoch, model, optimizer, lr_scheduler):
+    accelerator.wait_for_everyone()
+    if accelerator.is_main_process:
+        os.umask(0o000)
+        save_checkpoint(os.path.join(config.work_dir, 'checkpoints'),
+                        epoch=epoch,
+                        step=global_step,
+                        model=accelerator.unwrap_model(model),
+                        optimizer=optimizer,
+                        lr_scheduler=lr_scheduler
+                        )
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Process some integers.")
