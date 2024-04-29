@@ -22,6 +22,7 @@ from torch.utils.data import RandomSampler
 
 # probably have to import my dataset so that build_dataset can find it?
 from diffusion.data.datasets.InternalData_ms_ac import InternalDataMSSigmaAC
+from diffusion.data.datasets.utils_ac import get_t5_feature_path
 
 from diffusion import IDDPM, DPMS
 from diffusion.data.builder import build_dataset, build_dataloader, set_data_root
@@ -39,6 +40,9 @@ import wandb
 import json
 from diffusion.utils.text_embeddings import encode_prompts, get_path_for_encoded_prompt
 from diffusion.utils.image_evaluation import generate_images
+from diffusion.utils.cmmd import get_cmmd_for_images
+import torchvision.transforms as T
+from torchvision.transforms.functional import InterpolationMode
 
 warnings.filterwarnings("ignore")  # ignore warning
 
@@ -58,12 +62,18 @@ def log_eval_images(pipeline, global_step):
     wait_for_everyone()
     if not accelerator.is_main_process:
         return
+    if not (config.eval and 
+            config.eval.batch_size and 
+            config.eval.guidance_scale and
+            config.eval.prompts
+            ):
+        logger.warning('No eval config provided. Skipping log evaluation images')
     flush()
-    logger.info("Generating eval images... ")
+    logger.info(f"Generating {len(config.eval.prompts)} eval images... ")
 
     batch_size = config.eval.batch_size
     seed = config.eval.get('seed', 0)
-    guidance_scale = config.eval.guidance_scale
+    guidance_scale = config.eval.get(guidance_scale, 4.5)
     eval_sample_prompts = config.eval.prompts
 
     prompt_embeds_list = []
@@ -126,7 +136,7 @@ def log_validation_loss(model, global_step):
     
     model.eval()
     validation_losses = []
-
+    logger.info(f"logging validation loss for {len(val_dataset)} images")
     for batch in val_dataloader:
         z = batch[0]
         latents = (z * config.scale_factor)
@@ -156,6 +166,7 @@ def log_validation_loss(model, global_step):
 
     model.train()
 
+# this used anywhere?
 def get_cmmd_train_and_val_samples():
     if not config.cmmd:
         logger.info("No CMMD config provided. Skipping get_cmmd_train_and_val_samples")
@@ -175,12 +186,13 @@ def log_cmmd(
         pipeline,
         global_step,
         ):
-    if not config.cmmd:
-        logger.warning("No CMMD data provided. Skipping CMMD calculation.")
-        return
     wait_for_everyone()
     if not accelerator.is_main_process:
         return
+    if not config.cmmd:
+        logger.warning("No CMMD data provided. Skipping CMMD calculation.")
+        return
+    flush()
     
     data_root = config.data.root
     t5_save_dir = config.data.t5_save_dir
@@ -201,6 +213,7 @@ def log_cmmd(
                 relative_root_dir=data_root,
                 max_token_length=max_length,
                 )
+            # should this reuse or share logic with the dataset get item?
             embed_dict = np.load(npz_path)
             caption_feature = torch.from_numpy(embed_dict['caption_feature'])
             attention_mask = torch.from_numpy(embed_dict['attention_mask'])
@@ -209,6 +222,7 @@ def log_cmmd(
         return torch.stack(caption_feature_list), torch.stack(attention_mask_list)
 
     # generate images and compute CMMD for either train or val items
+    # note: generated images are squares of image_size
     def generate_images_and_cmmd(items):
         caption_features, attention_masks = build_t5_batch_tensors_from_item_paths([item['path'] for item in items])
         generated_images = generate_images(
@@ -222,7 +236,17 @@ def log_cmmd(
             guidance_scale=config.cmmd.guidance_scale,
         )
         orig_image_paths = [os.path.join(data_root, item['path']) for item in items]
+        # resize original images
         orig_images = [Image.open(image_path) for image_path in orig_image_paths]
+        transform = T.Compose([
+                T.Lambda(lambda img: img.convert('RGB')),
+                T.Resize(config.image_size, interpolation=InterpolationMode.BICUBIC),  # Image.BICUBIC
+                T.CenterCrop(config.image_size),
+                # T.ToTensor(),
+                # T.Normalize([.5], [.5]),
+            ])
+        orig_images = [transform(image) for image in orig_images]
+
         cmmd_score = get_cmmd_for_images(
             ref_images=orig_images,
             eval_images=generated_images,
