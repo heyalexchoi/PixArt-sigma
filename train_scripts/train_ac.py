@@ -296,7 +296,7 @@ def prepare_for_training(model):
     return model
 
 
-def train():
+def train(model):
     if config.get('debug_nan', False):
         DebugUnderflowOverflow(model)
         logger.info('NaN debugger registered. Start to detect overflow during training.')
@@ -423,9 +423,16 @@ def train():
         # wait_for_everyone()
 
 def _get_image_gen_pipeline(transformer):
+    dtype_mapping = {
+        'fp16': torch.float16,
+        'fp32': torch.float32,
+        'fp64': torch.float64,
+        'int32': torch.int32,
+        'int64': torch.int64
+    }
     return get_image_gen_pipeline(
                 pipeline_load_from=config.pipeline_load_from,
-                torch_dtype=accelerator.mixed_precision,
+                torch_dtype=dtype_mapping[accelerator.mixed_precision],
                 device=accelerator.device,
                 transformer=transformer,
                 )
@@ -667,4 +674,4 @@ if __name__ == '__main__':
     # objects in the same order you gave them to the prepare method.
     model = accelerator.prepare(model)
     optimizer, train_dataloader, lr_scheduler = accelerator.prepare(optimizer, train_dataloader, lr_scheduler)
-    train()
+    train(model=model)

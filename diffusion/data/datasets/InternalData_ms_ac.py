@@ -63,7 +63,7 @@ class InternalDataMSSigmaAC(InternalDataSigma):
         self.mask_index_samples = []
         self.ratio_index = {}
         self.ratio_nums = {}
-        self.weight_dtype = torch.float16 if self.real_prompt_ratio > 0 else torch.float32
+        self.weight_dtype = torch.float16
         self.interpolate_model = InterpolationMode.BICUBIC
         if self.aspect_ratio in [ASPECT_RATIO_2048, ASPECT_RATIO_2880]:
             self.interpolate_model = InterpolationMode.LANCZOS
@@ -158,6 +158,9 @@ class InternalDataMSSigmaAC(InternalDataSigma):
             attention_mask = torch.cat([attention_mask, torch.zeros(1, 1, self.max_token_length-attention_mask.shape[-1])], dim=-1)
 
         return img, txt_fea, attention_mask.to(torch.int16), data_info
+
+    def __len__(self):
+        return len(self.meta_data_clean)
 
     def __getitem__(self, idx):
         for _ in range(20):
