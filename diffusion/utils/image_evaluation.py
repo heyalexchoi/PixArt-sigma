@@ -1,6 +1,7 @@
 import torch
 from diffusers import ConsistencyDecoderVAE, DPMSolverMultistepScheduler, Transformer2DModel, AutoencoderKL
-from scripts.diffusers_patches import pixart_sigma_init_patched_inputs, PixArtSigmaPipeline
+# from scripts.diffusers_patches import pixart_sigma_init_patched_inputs, PixArtSigmaPipeline
+from diffusers import PixArtSigmaPipeline
 from diffusion.utils.logger_ac import get_logger
 from diffusion.utils.text_embeddings import get_path_for_encoded_prompt
 

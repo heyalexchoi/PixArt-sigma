@@ -76,6 +76,7 @@ def log_eval_images(pipeline, global_step):
     seed = config.eval.get('seed', 0)
     guidance_scale = config.eval.get('guidance_scale', 4.5)
     eval_sample_prompts = config.eval.prompts
+    max_token_length = config.max_token_length
 
     prompt_embeds_list = []
     prompt_attention_mask_list = []
@@ -102,6 +103,8 @@ def log_eval_images(pipeline, global_step):
         height=config.image_size,
         seed=seed,
         guidance_scale=guidance_scale,
+        device=accelerator.device,
+        max_token_length=max_token_length,
     )
 
     flush()
@@ -235,6 +238,9 @@ def log_cmmd(
             width=config.image_size,
             height=config.image_size,
             guidance_scale=config.cmmd.guidance_scale,
+            device=accelerator.device,
+            max_token_length=config.max_token_length,
+
         )
         orig_image_paths = [os.path.join(data_root, item['path']) for item in items]
         # resize original images
@@ -436,9 +442,11 @@ def _get_image_gen_pipeline(model):
         state_dict=model.state_dict(),
         image_size=image_size,
     )
+    torch_dtype = dtype_mapping[accelerator.mixed_precision]
+    diffusers_transformer = diffusers_transformer.to(torch_dtype)
     return get_image_gen_pipeline(
                 pipeline_load_from=config.pipeline_load_from,
-                torch_dtype=dtype_mapping[accelerator.mixed_precision],
+                torch_dtype=torch_dtype,
                 device=accelerator.device,
                 transformer=diffusers_transformer,
                 )
@@ -575,7 +583,7 @@ if __name__ == '__main__':
             pipeline_load_from=eval_config.pipeline_load_from,
             device=accelerator.device,
             batch_size=eval_config.batch_size,
-            max_token_length=eval_config.max_token_length,
+            max_token_length=config.max_token_length,
         )
         
     model_kwargs = {"pe_interpolation": config.pe_interpolation, "config": config,
