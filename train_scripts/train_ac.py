@@ -41,6 +41,7 @@ import json
 from diffusion.utils.text_embeddings import encode_prompts, get_path_for_encoded_prompt
 from diffusion.utils.image_evaluation import generate_images, get_image_gen_pipeline
 from diffusion.utils.cmmd import get_cmmd_for_images
+from diffusion.model.nets.diffusers import convert_net_to_diffusers
 import torchvision.transforms as T
 from torchvision.transforms.functional import InterpolationMode
 
@@ -73,7 +74,7 @@ def log_eval_images(pipeline, global_step):
 
     batch_size = config.eval.batch_size
     seed = config.eval.get('seed', 0)
-    guidance_scale = config.eval.get(guidance_scale, 4.5)
+    guidance_scale = config.eval.get('guidance_scale', 4.5)
     eval_sample_prompts = config.eval.prompts
 
     prompt_embeds_list = []
@@ -296,7 +297,8 @@ def prepare_for_training(model):
     return model
 
 
-def train(model):
+def train():
+    global model
     if config.get('debug_nan', False):
         DebugUnderflowOverflow(model)
         logger.info('NaN debugger registered. Start to detect overflow during training.')
@@ -310,7 +312,7 @@ def train(model):
         if config.eval.at_start or config.cmmd.at_start:
             model = prepare_for_inference(model)
             pipeline = _get_image_gen_pipeline(
-                transformer=model,
+                model=model,
                 )
 
         if config.eval.at_start:
@@ -408,7 +410,7 @@ def train(model):
         if (should_log_eval or should_log_cmmd) and accelerator.is_main_process:
             model = prepare_for_inference(model)
             pipeline = _get_image_gen_pipeline(
-                transformer=model,
+                model=model,
                 )
             if should_log_eval:
                 log_eval_images(pipeline=pipeline, global_step=global_step)
@@ -422,7 +424,7 @@ def train(model):
         # accelerator.wait_for_everyone()
         # wait_for_everyone()
 
-def _get_image_gen_pipeline(transformer):
+def _get_image_gen_pipeline(model):
     dtype_mapping = {
         'fp16': torch.float16,
         'fp32': torch.float32,
@@ -430,11 +432,15 @@ def _get_image_gen_pipeline(transformer):
         'int32': torch.int32,
         'int64': torch.int64
     }
+    diffusers_transformer = convert_net_to_diffusers(
+        state_dict=model.state_dict(),
+        image_size=image_size,
+    )
     return get_image_gen_pipeline(
                 pipeline_load_from=config.pipeline_load_from,
                 torch_dtype=dtype_mapping[accelerator.mixed_precision],
                 device=accelerator.device,
-                transformer=transformer,
+                transformer=diffusers_transformer,
                 )
 
 def save_state(global_step, epoch, model, optimizer, lr_scheduler):
@@ -674,4 +680,4 @@ if __name__ == '__main__':
     # objects in the same order you gave them to the prepare method.
     model = accelerator.prepare(model)
     optimizer, train_dataloader, lr_scheduler = accelerator.prepare(optimizer, train_dataloader, lr_scheduler)
-    train(model=model)
+    train()

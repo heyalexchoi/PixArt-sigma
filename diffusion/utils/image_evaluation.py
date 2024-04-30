@@ -14,7 +14,6 @@ def get_image_gen_pipeline(
     ):
     """Get pipeline with image generation components, without text encoding. Optionally load a passed in transformer"""
     logger.info(f"Loading image gen pipeline {pipeline_load_from} to device: {device} and dtype {torch_dtype}...")
-    
     pipe = PixArtSigmaPipeline.from_pretrained(
         pipeline_load_from,
         transformer=transformer,
