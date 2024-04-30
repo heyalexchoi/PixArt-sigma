@@ -149,7 +149,8 @@ class InternalDataMSSigmaAC(InternalDataSigma):
         attention_mask = torch.ones(1, 1, self.max_token_length)
         
         txt_info = np.load(npz_path)
-        txt_fea = torch.from_numpy(txt_info['caption_feature'])
+        # add batch dimension to get to shape torch.Size([1, 300, 4096])
+        txt_fea = torch.from_numpy(txt_info['caption_feature'])[None]
         if 'attention_mask' in txt_info.keys():
             attention_mask = torch.from_numpy(txt_info['attention_mask'])[None]
         if txt_fea.shape[1] != self.max_token_length:
