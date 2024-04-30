@@ -59,7 +59,7 @@ def get_feature_path(feature_dir, image_path, extension, relative_root_dir):
 # should pass in vae type 'sdxl' or 'ldm'
 # previous extractions used 'ldm' and were only type, so the vae type part of the signature is not included
 def get_vae_signature(resolution, is_multiscale, vae_type):
-    assert resolution in [256, 512, 1024]
+    assert resolution in [256, 512, 1024, 2048]
     first_part = 'multiscale' if is_multiscale else 'cropped'
     signature = f"{first_part}-{resolution}"
     if vae_type == 'sdxl':
