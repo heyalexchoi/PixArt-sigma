@@ -37,7 +37,7 @@ def load_checkpoint(checkpoint,
 
     null_embed_path = get_path_for_encoded_prompt(prompt='',max_token_length=max_length)
     null_embed = torch.load(null_embed_path, map_location='cpu')
-    state_dict['y_embedder.y_embedding'] = null_embed['prompt_embeds'][0]
+    state_dict['y_embedder.y_embedding'] = null_embed['prompt_embeds']
 
     missing, unexpect = model.load_state_dict(state_dict, strict=False)
     if model_ema is not None:
