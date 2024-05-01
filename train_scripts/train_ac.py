@@ -31,6 +31,7 @@ from diffusion.utils.checkpoint import save_checkpoint
 from diffusion.utils.checkpoint_ac import load_checkpoint
 from diffusion.utils.data_sampler import AspectRatioBatchSampler
 from diffusion.utils.dist_utils import synchronize, get_world_size, clip_grad_norm_, flush
+from diffusion.utils.logger_ac import get_logger
 from diffusion.utils.logger import get_root_logger, rename_file_with_creation_time
 from diffusion.utils.lr_scheduler import build_lr_scheduler
 from diffusion.utils.misc import set_random_seed, read_config, init_random_seed, DebugUnderflowOverflow
@@ -268,23 +269,24 @@ def log_cmmd(
             device=accelerator.device,
         )
         return generated_images, cmmd_score
-    
+    logger.info('generating images and cmmd scores...')
     generated_train_images, train_cmmd_score = generate_images_and_cmmd(train_items)
     generated_val_images, val_cmmd_score = generate_images_and_cmmd(val_items)
 
     for tracker in accelerator.trackers:
+        max_images_logged = config.cmmd.get('max_images_logged', 10)
         if tracker.name == 'wandb':
             train_prompts = [item['prompt'] for item in train_items]
             val_prompts = [item['prompt'] for item in val_items]
             wandb_train_images = [wandb.Image(
                 image,
                 caption=prompt,
-                ) for image, prompt in zip(generated_train_images, train_prompts)]
+                ) for image, prompt in list(zip(generated_train_images, train_prompts))[:max_images_logged]]
             wandb_val_images = [wandb.Image(
                 image,
                 caption=prompt,
-                ) for image, prompt in zip(generated_val_images, val_prompts)]
-            
+                ) for image, prompt in list(zip(generated_val_images, val_prompts))[:max_images_logged]]
+            logger.info('logging cmmd images to wandb...')
             tracker.log({
                 "generated_train_images": wandb_train_images, 
                 "generated_val_images": wandb_val_images,
@@ -293,7 +295,7 @@ def log_cmmd(
                 )
         else:
             logger.warn(f"CMMD logging not implemented for {tracker.name}")
-
+    logger.info('logging cmmd scores to wandb...')
     accelerator.log({
         "train_cmmd_score": train_cmmd_score,
         "val_cmmd_score": val_cmmd_score,
@@ -333,21 +335,24 @@ def train():
 
         if config.cmmd.at_start:
             log_cmmd(pipeline=pipeline, global_step=global_step)
+            logger.info('finish log cmmd ')
         
         if pipeline:
             model = prepare_for_training(model)
             del pipeline
             flush()
+            logger.info('finished w image gen pipeline')
 
     # Now you train the model
     for epoch in range(start_epoch + 1, config.num_epochs + 1):
+        logger.info('start epoch')
         data_time_start= time.time()
         data_time_all = 0
         for step, batch in enumerate(train_dataloader):
             if step < skip_step:
                 global_step += 1
                 continue    # skip data in the resumed ckpt
-            
+            logger.info('step: {}'.format(step))
             z = batch[0]
             clean_images = z * config.scale_factor
 
@@ -364,12 +369,14 @@ def train():
             data_time_all += time.time() - data_time_start
             with accelerator.accumulate(model):
                 # Predict the noise residual
+                logger.info('accumulating')
                 optimizer.zero_grad()
                 loss_term = train_diffusion.training_losses(
                     model, clean_images, timesteps, 
                     model_kwargs=dict(y=y, mask=y_mask, data_info=data_info)
                     )
                 loss = loss_term['loss'].mean()
+                logger.info('accumulating backward')
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
                     grad_norm = accelerator.clip_grad_norm_(model.parameters(), config.gradient_clip)
@@ -377,7 +384,7 @@ def train():
                 lr_scheduler.step()
 
             lr = lr_scheduler.get_last_lr()[0]
-            logs = {args.loss_report_name: accelerator.gather(loss).mean().item()}
+            logs = {'loss': accelerator.gather(loss).mean().item()}
             if grad_norm is not None:
                 logs.update(grad_norm=accelerator.gather(grad_norm).mean().item())
             log_buffer.update(logs)
@@ -397,6 +404,7 @@ def train():
                 log_buffer.clear()
                 data_time_all = 0
             logs.update(lr=lr)
+            logger.info('logging to accelerator...')
             accelerator.log(logs, step=global_step)
 
             global_step += 1
