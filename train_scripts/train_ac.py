@@ -47,6 +47,15 @@ from torchvision.transforms.functional import InterpolationMode
 
 warnings.filterwarnings("ignore")  # ignore warning
 
+dtype_mapping = {
+        'fp16': torch.float16,
+        'fp32': torch.float32,
+        'fp64': torch.float64,
+        'int32': torch.int32,
+        'int64': torch.int64,
+        'no': torch.float32,
+    }
+
 def wait_for_everyone():
     # possible issue with accelerator.wait_for_everyone() breaking on linux kernel < 5.5
     # https://github.com/huggingface/accelerate/issues/1929
@@ -131,7 +140,6 @@ def log_eval_images(pipeline, global_step):
 
     return image_logs
 
-
 @torch.inference_mode()
 def log_validation_loss(model, global_step):
     if not val_dataloader:
@@ -144,11 +152,10 @@ def log_validation_loss(model, global_step):
     for batch in val_dataloader:
         z = batch[0]
         latents = (z * config.scale_factor)
-        # y = batch[1].squeeze(1)
-        # y_mask = batch[2].squeeze(1).squeeze(1)
+
         y = batch[1]
         y_mask = batch[2]
-        # data_info = {'resolution': batch[3]['img_hw'], 'aspect_ratio': batch[3]['aspect_ratio'],}
+        
         data_info = batch[3]
 
         # Sample multiple timesteps for each image
@@ -156,7 +163,7 @@ def log_validation_loss(model, global_step):
         timesteps = torch.randint(0, config.train_sampling_steps, (bs,), device=latents.device).long()
 
         # Predict the noise residual and compute the validation loss
-        with accelerator.autocast():
+        with torch.no_grad():
             loss_term = train_diffusion.training_losses(
                 model, latents, timesteps, 
                 model_kwargs=dict(y=y, mask=y_mask, data_info=data_info)
@@ -342,22 +349,26 @@ def train():
                 continue    # skip data in the resumed ckpt
             
             z = batch[0]
-            
             clean_images = z * config.scale_factor
-            data_info = batch[3]
 
             y = batch[1]
             y_mask = batch[2]
 
+            data_info = batch[3]
+
             # Sample a random timestep for each image
             bs = clean_images.shape[0]
             timesteps = torch.randint(0, config.train_sampling_steps, (bs,), device=clean_images.device).long()
+
             grad_norm = None
             data_time_all += time.time() - data_time_start
             with accelerator.accumulate(model):
                 # Predict the noise residual
                 optimizer.zero_grad()
-                loss_term = train_diffusion.training_losses(model, clean_images, timesteps, model_kwargs=dict(y=y, mask=y_mask, data_info=data_info))
+                loss_term = train_diffusion.training_losses(
+                    model, clean_images, timesteps, 
+                    model_kwargs=dict(y=y, mask=y_mask, data_info=data_info)
+                    )
                 loss = loss_term['loss'].mean()
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
@@ -432,18 +443,10 @@ def train():
         # wait_for_everyone()
 
 def _get_image_gen_pipeline(model):
-    dtype_mapping = {
-        'fp16': torch.float16,
-        'fp32': torch.float32,
-        'fp64': torch.float64,
-        'int32': torch.int32,
-        'int64': torch.int64
-    }
     diffusers_transformer = convert_net_to_diffusers(
         state_dict=model.state_dict(),
         image_size=image_size,
     )
-    torch_dtype = dtype_mapping[accelerator.mixed_precision]
     diffusers_transformer = diffusers_transformer.to(torch_dtype)
     return get_image_gen_pipeline(
                 pipeline_load_from=config.pipeline_load_from,
@@ -548,6 +551,8 @@ if __name__ == '__main__':
         kwargs_handlers=[init_handler]
     )
 
+    torch_dtype = dtype_mapping[accelerator.mixed_precision]
+
     log_name = 'train_log.log'
     if accelerator.is_main_process:
         if os.path.exists(os.path.join(config.work_dir, log_name)):
@@ -622,7 +627,8 @@ if __name__ == '__main__':
     set_data_root(config.data_root)
     dataset = build_dataset(
         train_data, resolution=image_size, aspect_ratio_type=config.aspect_ratio_type,
-        real_prompt_ratio=config.real_prompt_ratio, max_length=max_length, config=config,
+        # real_prompt_ratio=config.real_prompt_ratio, 
+        max_length=max_length, config=config,
     )
     
     val_dataset = None
@@ -688,5 +694,5 @@ if __name__ == '__main__':
     # There is no specific order to remember, you just need to unpack the
     # objects in the same order you gave them to the prepare method.
     model = accelerator.prepare(model)
-    optimizer, train_dataloader, lr_scheduler = accelerator.prepare(optimizer, train_dataloader, lr_scheduler)
+    optimizer, train_dataloader, val_dataloader, lr_scheduler = accelerator.prepare(optimizer, train_dataloader, val_dataloader, lr_scheduler)
     train()
