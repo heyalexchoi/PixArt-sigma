@@ -618,6 +618,7 @@ if __name__ == '__main__':
     if args.load_from is not None:
         config.load_from = args.load_from
     if config.load_from is not None:
+        logger.info(f'loading checkpoint from {config.load_from}')
         missing, unexpected = load_checkpoint(
             config.load_from, model, load_ema=config.get('load_ema', False), max_length=max_length)
         logger.warning(f'Missing keys: {missing}')
@@ -685,6 +686,7 @@ if __name__ == '__main__':
     total_steps = len(train_dataloader) * config.num_epochs
 
     if config.resume_from is not None and config.resume_from['checkpoint'] is not None:
+        logger.info(f'resuming from checkpoint {config.resume_from['checkpoint']}')
         resume_path = config.resume_from['checkpoint']
         path = os.path.basename(resume_path)
         start_epoch = int(path.replace('.pth', '').split("_")[1]) - 1
