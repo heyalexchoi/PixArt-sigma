@@ -79,6 +79,7 @@ def log_eval_images(pipeline, global_step):
             config.eval.prompts
             ):
         logger.warning('No eval config provided. Skipping log evaluation images')
+        return
     flush()
     logger.info(f"Generating {len(config.eval.prompts)} eval images... ")
 
@@ -322,26 +323,26 @@ def train():
 
     global_step = start_step + 1
 
-    if accelerator.is_main_process:
-        pipeline = None
-        if config.eval.at_start or config.cmmd.at_start:
-            model = prepare_for_inference(model)
-            pipeline = _get_image_gen_pipeline(
-                model=model,
-                )
+    # if accelerator.is_main_process:
+    pipeline = None
+    if config.eval.at_start or config.cmmd.at_start:
+        model = prepare_for_inference(model)
+        pipeline = _get_image_gen_pipeline(
+            model=model,
+            )
 
-        if config.eval.at_start:
-            log_eval_images(pipeline=pipeline, global_step=global_step)
+    if config.eval.at_start:
+        log_eval_images(pipeline=pipeline, global_step=global_step)
 
-        if config.cmmd.at_start:
-            log_cmmd(pipeline=pipeline, global_step=global_step)
-            logger.info('finish log cmmd ')
-        
-        if pipeline:
-            model = prepare_for_training(model)
-            del pipeline
-            flush()
-            logger.info('finished w image gen pipeline')
+    if config.cmmd.at_start:
+        log_cmmd(pipeline=pipeline, global_step=global_step)
+        logger.info('finish log cmmd ')
+    
+    if pipeline:
+        model = prepare_for_training(model)
+        del pipeline
+        flush()
+        logger.info('finished w image gen pipeline')
 
     # Now you train the model
     for epoch in range(start_epoch + 1, config.num_epochs + 1):
@@ -433,7 +434,8 @@ def train():
         should_log_eval = (config.eval.every_n_epochs and epoch % config.eval.every_n_epochs == 0) or epoch == config.num_epochs
         should_log_cmmd = (config.cmmd.every_n_epochs and epoch % config.cmmd.every_n_epochs == 0) or epoch == config.num_epochs
 
-        if (should_log_eval or should_log_cmmd) and accelerator.is_main_process:
+        # if (should_log_eval or should_log_cmmd) and accelerator.is_main_process:
+        if (should_log_eval or should_log_cmmd):
             model = prepare_for_inference(model)
             pipeline = _get_image_gen_pipeline(
                 model=model,
@@ -464,7 +466,7 @@ def _get_image_gen_pipeline(model):
                 )
 
 def save_state(global_step, epoch, model, optimizer, lr_scheduler):
-    accelerator.wait_for_everyone()
+    wait_for_everyone()
     if accelerator.is_main_process:
         os.umask(0o000)
         save_checkpoint(os.path.join(config.work_dir, 'checkpoints'),
@@ -686,7 +688,7 @@ if __name__ == '__main__':
     total_steps = len(train_dataloader) * config.num_epochs
 
     if config.resume_from is not None and config.resume_from['checkpoint'] is not None:
-        logger.info(f'resuming from checkpoint {config.resume_from['checkpoint']}')
+        logger.info(f"resuming from checkpoint {config.resume_from['checkpoint']}")
         resume_path = config.resume_from['checkpoint']
         path = os.path.basename(resume_path)
         start_epoch = int(path.replace('.pth', '').split("_")[1]) - 1
