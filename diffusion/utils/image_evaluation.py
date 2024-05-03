@@ -39,6 +39,7 @@ def generate_images(
         max_token_length,
         seed=0,
         guidance_scale=4.5,
+        output_type='pil',
     ):
     """
     batch generates images from caption embeddings with batch dim
@@ -76,6 +77,7 @@ def generate_images(
             negative_prompt=None,
             negative_prompt_embeds=negative_prompt_embeds,
             negative_prompt_attention_mask=negative_prompt_attention_mask,
+            output_type=output_type,
         ).images
         
         images.extend(batch_images)
