@@ -43,6 +43,8 @@ class InternalDataMSSigmaAC(InternalDataSigma):
                  vae_type='sdxl',
                  max_token_length=300,
                  config=None,
+                 conditional_dropout=0.0,
+                 null_embed_path=None,
                  **kwargs):
         self.root = get_data_path(root)
         self.transform = transform
@@ -65,6 +67,8 @@ class InternalDataMSSigmaAC(InternalDataSigma):
         self.ratio_nums = {}
         self.weight_dtype = torch.float16
         self.interpolate_model = InterpolationMode.BICUBIC
+        self.conditional_dropout = conditional_dropout
+        self.null_embed_path = null_embed_path
         if self.aspect_ratio in [ASPECT_RATIO_2048, ASPECT_RATIO_2880]:
             self.interpolate_model = InterpolationMode.LANCZOS
         for k, v in self.aspect_ratio.items():
@@ -148,11 +152,24 @@ class InternalDataMSSigmaAC(InternalDataSigma):
 
         attention_mask = torch.ones(1, 1, self.max_token_length)
         
-        txt_info = np.load(npz_path)
-        # add batch dimension to get to shape torch.Size([1, 300, 4096])
-        txt_fea = torch.from_numpy(txt_info['caption_feature'])[None]
-        if 'attention_mask' in txt_info.keys():
-            attention_mask = torch.from_numpy(txt_info['attention_mask'])[None]
+        if (self.conditional_dropout > 0 
+            and self.null_embed_path is not None
+            and random.random() < self.conditional_dropout):
+            logger.info(f'loading null embedding for cond dropout {self.conditional_dropout}')
+            # load null embedding
+            txt_info = torch.load(self.null_embed_path)
+            txt_fea = txt_info['prompt_embeds'][None]
+            attention_mask = txt_info['prompt_attention_mask'][None]
+            logger.info(f'txt_info: {txt_info.keys()}\n{txt_info["prompt_embeds"].shape}\n{txt_info["prompt_attention_mask"].shape}')
+        else:
+            logger.info('loading t5 embedding')
+            txt_info = np.load(npz_path)
+            # add batch dimension to get to shape torch.Size([1, 300, 4096])
+            txt_fea = torch.from_numpy(txt_info['caption_feature'])[None]
+            if 'attention_mask' in txt_info.keys():
+                attention_mask = torch.from_numpy(txt_info['attention_mask'])[None]
+
+        # pad to max_token_length
         if txt_fea.shape[1] != self.max_token_length:
             logger.warn(f'dataloader txt_fea.shape[1] {txt_fea.shape[1]} does not match self.max_token_length: {self.max_token_length}')
             txt_fea = torch.cat([txt_fea, txt_fea[:, -1:].repeat(1, self.max_token_length-txt_fea.shape[1], 1)], dim=1).to(self.weight_dtype)

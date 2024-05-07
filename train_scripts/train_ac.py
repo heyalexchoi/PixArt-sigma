@@ -588,6 +588,7 @@ if __name__ == '__main__':
 
     logger.info(f"vae scale factor: {config.scale_factor}")
 
+    # null embed needed for: conditional dropout, eval, cmmd, and for the model class_dropout_prob (via load_checkpoint)
     if (config.eval or config.resume_from) and accelerator.is_main_process:
         # preparing embeddings for visualization. We put it here for saving GPU memory
         eval_config = config.eval
