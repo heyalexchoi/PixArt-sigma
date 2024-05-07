@@ -155,14 +155,11 @@ class InternalDataMSSigmaAC(InternalDataSigma):
         if (self.conditional_dropout > 0 
             and self.null_embed_path is not None
             and random.random() < self.conditional_dropout):
-            logger.info(f'loading null embedding for cond dropout {self.conditional_dropout}')
             # load null embedding
-            txt_info = torch.load(self.null_embed_path)
+            txt_info = torch.load(self.null_embed_path, map_location='cpu')
             txt_fea = txt_info['prompt_embeds'][None]
             attention_mask = txt_info['prompt_attention_mask'][None]
-            logger.info(f'txt_info: {txt_info.keys()}\n{txt_info["prompt_embeds"].shape}\n{txt_info["prompt_attention_mask"].shape}')
         else:
-            logger.info('loading t5 embedding')
             txt_info = np.load(npz_path)
             # add batch dimension to get to shape torch.Size([1, 300, 4096])
             txt_fea = torch.from_numpy(txt_info['caption_feature'])[None]
