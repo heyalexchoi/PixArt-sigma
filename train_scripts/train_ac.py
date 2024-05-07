@@ -639,7 +639,8 @@ if __name__ == '__main__':
     set_data_root(config.data_root)
     dataset = build_dataset(
         train_data, resolution=image_size, aspect_ratio_type=config.aspect_ratio_type,
-        # real_prompt_ratio=config.real_prompt_ratio, 
+        # real_prompt_ratio=config.real_prompt_ratio,
+        null_embed_path=get_path_for_encoded_prompt('', max_length),
         max_length=max_length, config=config,
     )
     
