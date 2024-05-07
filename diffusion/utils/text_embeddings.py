@@ -63,27 +63,28 @@ def encode_prompts(prompts, pipeline_load_from, device, batch_size, max_token_le
 
     batches = [need_encoding[i:i + batch_size] for i in range(0, len(need_encoding), batch_size)]
 
-    for i in tqdm(range(len(batches)), desc='text encoding batches'):
-        batch_prompts = batches[i]
-        batch_txt_tokens = tokenizer(
-                batch_prompts, max_length=max_token_length, padding="max_length", truncation=True, return_tensors="pt"
-            ).to(device)
-        batch_caption_emb = text_encoder(batch_txt_tokens.input_ids, attention_mask=batch_txt_tokens.attention_mask)[0]
-        
-        # Assuming you are modifying to save each prompt's data separately
-        for j, prompt in enumerate(batch_prompts):
-            # Extract embeddings and attention mask for the j-th item in the batch
-            prompt_embeds = batch_caption_emb[j, :, :]
-            prompt_attention_mask = batch_txt_tokens.attention_mask[j, :]
-            # Generate a unique path for each prompt
-            save_path = get_path_for_encoded_prompt(
-                prompt=prompt, 
-                max_token_length=max_token_length
-                )
-            torch.save({
-                'prompt_embeds': prompt_embeds,
-                'prompt_attention_mask': prompt_attention_mask,
-            }, save_path)
+    with torch.no_grad():
+        for i in tqdm(range(len(batches)), desc='text encoding batches'):
+            batch_prompts = batches[i]
+            batch_txt_tokens = tokenizer(
+                    batch_prompts, max_length=max_token_length, padding="max_length", truncation=True, return_tensors="pt"
+                ).to(device)
+            batch_caption_emb = text_encoder(batch_txt_tokens.input_ids, attention_mask=batch_txt_tokens.attention_mask)[0]
+            
+            # Assuming you are modifying to save each prompt's data separately
+            for j, prompt in enumerate(batch_prompts):
+                # Extract embeddings and attention mask for the j-th item in the batch
+                prompt_embeds = batch_caption_emb[j, :, :]
+                prompt_attention_mask = batch_txt_tokens.attention_mask[j, :]
+                # Generate a unique path for each prompt
+                save_path = get_path_for_encoded_prompt(
+                    prompt=prompt, 
+                    max_token_length=max_token_length
+                    )
+                torch.save({
+                    'prompt_embeds': prompt_embeds,
+                    'prompt_attention_mask': prompt_attention_mask,
+                }, save_path)
     del tokenizer
     del text_encoder
     flush()
