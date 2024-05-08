@@ -150,6 +150,7 @@ def log_validation_loss(model, global_step):
     
     model.eval()
     validation_losses = []
+    step_bucket_losses = {} # key: bucket name, value: list of losses in that bucket. at end, changes to mean of losses
     logger.info(f"logging validation loss for {len(val_dataset)} images")
     for batch in val_dataloader:
         z = batch[0]
@@ -170,12 +171,31 @@ def log_validation_loss(model, global_step):
                 model, latents, timesteps, 
                 model_kwargs=dict(y=y, mask=y_mask, data_info=data_info)
                 )
-            loss = loss_term['loss'].mean()
-            validation_losses.append(accelerator.gather(loss).cpu().numpy())
+            gathered_losses = accelerator.gather(loss_term['loss']).cpu().numpy()
+            mean_loss = gathered_losses.mean()
+            # loss = loss_term['loss'].mean()
+            # validation_losses.append(accelerator.gather(loss).cpu().numpy())
+            validation_losses.append(mean_loss)
+            step_bucket_mean_loss = get_step_bucket_loss(
+                gathered_timesteps=accelerator.gather(timesteps).cpu().numpy(),
+                gathered_losses=gathered_losses,
+            )
+            for bucket_name, bucket_loss in step_bucket_mean_loss.items():
+                if bucket_name not in step_bucket_losses:
+                    step_bucket_losses[bucket_name] = []
+                step_bucket_losses[bucket_name].append(bucket_loss)
 
     validation_loss = np.mean(validation_losses)
-    logger.info(f"Global Step {global_step}: Validation Loss: {validation_loss:.4f}")
-    accelerator.log({"validation_loss": validation_loss}, step=global_step)
+    logs = {"validation_loss": validation_loss}
+    for bucket_name, bucket_losses in step_bucket_losses.items():
+        bucket_mean_loss = np.mean(bucket_losses)
+        step_bucket_losses[bucket_name] = bucket_mean_loss
+
+    logs.update(step_bucket_losses)
+    info = f"Global Step {global_step}"
+    info += ', '.join([f"{k}:{v:.4f}" for k, v in logs.items()])
+    logger.info(info)
+    accelerator.log(logs, step=global_step)
 
     model.train()
 
@@ -312,6 +332,36 @@ def prepare_for_training(model):
     model.train()
     return model
 
+def get_step_bucket_loss(
+        gathered_timesteps,
+        gathered_losses,
+        ):
+    """
+    Bucket loss by timestep, and log.
+    5 buckets
+    """
+    num_buckets = 5
+    bucket_ranges = np.linspace(0, config.train_sampling_steps, num=num_buckets + 1, endpoint=True).astype(int)
+    bucket_losses = {i: [] for i in range(num_buckets)}
+    mean_bucket_losses = {}
+    # Accumulate losses in the respective buckets
+    for i in range(num_buckets):
+        mask = (gathered_timesteps >= bucket_ranges[i]) & (gathered_timesteps < bucket_ranges[i + 1])
+        if np.any(mask):
+            bucket_losses[i].extend(gathered_losses[mask])
+
+    # Compute mean loss for each bucket and log
+    for i in range(num_buckets):
+        if bucket_losses[i]:
+            bucket_mean_loss = np.mean(bucket_losses[i])
+            # get boundaries of bucket for log
+            lower_bound = bucket_ranges[i]
+            upper_bound = bucket_ranges[i + 1] - 1  # Subtract 1 to make the range inclusive
+            bucket_name = f"step_bucket_{lower_bound}-{upper_bound}"
+            mean_bucket_losses[bucket_name] = bucket_mean_loss
+            # logger.info(f"Global Step {global_step}: Bucket {i} Validation Loss: {bucket_mean_loss:.4f}")
+            # accelerator.log({"validation_loss_bucket_{}".format(i): bucket_mean_loss}, step=global_step)
+    return mean_bucket_losses
 
 def train():
     global model
@@ -384,11 +434,21 @@ def train():
                 optimizer.step()
                 lr_scheduler.step()
 
+            gathered_losses = accelerator.gather(loss_term['loss']).cpu().numpy()
             lr = lr_scheduler.get_last_lr()[0]
-            logs = {'loss': accelerator.gather(loss).mean().item()}
+            logs = {'loss': gathered_losses.mean().item()}
+            logs.update(lr=lr)
+            # mean bucket losses
+            step_bucket_mean_loss = get_step_bucket_loss(
+                gathered_timesteps=accelerator.gather(timesteps).cpu().numpy(),
+                gathered_losses=gathered_losses,
+            )
+            for bucket_name, bucket_loss in step_bucket_mean_loss.items():
+                logs[f'{bucket_name}_loss'] = bucket_loss
             if grad_norm is not None:
                 logs.update(grad_norm=accelerator.gather(grad_norm).mean().item())
             log_buffer.update(logs)
+
             if (step + 1) % config.log_interval == 0 or (step + 1) == 1:
                 t = (time.time() - last_tic) / config.log_interval
                 t_d = data_time_all / config.log_interval
@@ -404,9 +464,8 @@ def train():
                 last_tic = time.time()
                 log_buffer.clear()
                 data_time_all = 0
-            logs.update(lr=lr)
-            logger.info('logging to accelerator...')
-            accelerator.log(logs, step=global_step)
+                logger.info('logging to accelerator...')
+                accelerator.log(log_buffer.output.items(), step=global_step)
 
             global_step += 1
             data_time_start = time.time()
