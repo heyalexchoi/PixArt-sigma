@@ -87,10 +87,14 @@ def log_eval_images(pipeline, global_step):
     seed = config.eval.get('seed', 0)
     guidance_scale = config.eval.get('guidance_scale', 4.5)
     eval_sample_prompts = config.eval.prompts
+    eval_negative_prompt = config.eval.get('negative_prompt')
     max_token_length = config.max_token_length
 
     prompt_embeds_list = []
     prompt_attention_mask_list = []
+    negative_prompt_embeds_list = []
+    negative_prompt_attention_mask_list = []
+
     image_logs = []
     images = []
     for prompt in eval_sample_prompts:
@@ -100,14 +104,27 @@ def log_eval_images(pipeline, global_step):
                 )
         prompt_embeds_list.append(prompt_embed_dict['prompt_embeds'])
         prompt_attention_mask_list.append(prompt_embed_dict['prompt_attention_mask'])
+
+    if eval_negative_prompt:
+        negative_prompt_embed_dict = torch.load(
+                get_path_for_encoded_prompt(eval_negative_prompt, max_length),
+                map_location='cpu'
+                )
+        negative_prompt_embeds_list = [negative_prompt_embed_dict['prompt_embeds']] * len(eval_sample_prompts)
+        negative_prompt_attention_mask_list = [negative_prompt_embed_dict['prompt_attention_mask']] * len(eval_sample_prompts)
     
     prompt_embeds = torch.stack(prompt_embeds_list)
     prompt_attention_mask = torch.stack(prompt_attention_mask_list)
+
+    negative_prompt_embeds = torch.stack(negative_prompt_embeds_list) if negative_prompt_embeds_list else None
+    negative_prompt_attention_mask = torch.stack(negative_prompt_attention_mask_list) if negative_prompt_attention_mask_list else None
 
     images = generate_images(
         pipeline=pipeline,
         prompt_embeds=prompt_embeds,
         prompt_attention_mask=prompt_attention_mask,
+        negative_prompt_embeds=negative_prompt_embeds,
+        negative_prompt_attention_mask=negative_prompt_attention_mask,
         batch_size=batch_size,
         num_inference_steps=config.eval.num_inference_steps,
         width=config.image_size,
@@ -230,6 +247,7 @@ def log_cmmd(
     data_root = config.data.root
     t5_save_dir = config.data.t5_save_dir
     train_items, val_items = get_cmmd_train_and_val_samples()
+    negative_prompt = config.cmmd.get('negative_prompt')
 
     # generate images using the text captions
     logger.info("Generating CMMD images using the text captions...")
@@ -258,10 +276,23 @@ def log_cmmd(
     # note: generated images are squares of image_size
     def generate_images_and_cmmd(items):
         caption_features, attention_masks = build_t5_batch_tensors_from_item_paths([item['path'] for item in items])
+        negative_prompt_embeds = None
+        negative_prompt_attention_mask = None
+        if negative_prompt:
+            negative_prompt_embed_dict = torch.load(
+                get_path_for_encoded_prompt(negative_prompt, max_length),
+                map_location='cpu'
+                )
+            repeats = caption_features.size(0)
+            negative_prompt_embeds = negative_prompt_embed_dict['prompt_embeds'].repeat(repeats, 1)
+            negative_prompt_attention_mask = negative_prompt_embed_dict['prompt_attention_mask'].repeat(repeats, 1)
+
         generated_images = generate_images(
             pipeline=pipeline,
             prompt_embeds=caption_features,
             prompt_attention_mask=attention_masks,
+            negative_prompt_embeds=negative_prompt_embeds,
+            negative_prompt_attention_mask=negative_prompt_attention_mask,
             batch_size=config.cmmd.image_gen_batch_size,
             num_inference_steps=config.cmmd.num_inference_steps,
             width=config.image_size,
@@ -653,7 +684,13 @@ if __name__ == '__main__':
         eval_config = config.eval
         # load checkpoint, log eval images use null embed
         eval_prompts = eval_config.prompts or []
+        eval_negative_prompt = eval_config.get('negative_prompt')
+        cmmd_negative_prompt = config.cmmd.get('negative_prompt')
         prompts = [*eval_prompts, '']
+        if eval_negative_prompt:
+            prompts.append(eval_negative_prompt)
+        if cmmd_negative_prompt:
+            prompts.append(cmmd_negative_prompt)
         encode_prompts(
             prompts=prompts,
             pipeline_load_from=eval_config.pipeline_load_from,
