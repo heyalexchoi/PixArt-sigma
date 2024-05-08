@@ -284,8 +284,8 @@ def log_cmmd(
                 map_location='cpu'
                 )
             repeats = caption_features.size(0)
-            negative_prompt_embeds = negative_prompt_embed_dict['prompt_embeds'].repeat(repeats, 1)
-            negative_prompt_attention_mask = negative_prompt_embed_dict['prompt_attention_mask'].repeat(repeats, 1)
+            negative_prompt_embeds = negative_prompt_embed_dict['prompt_embeds'].unsqueeze(0).repeat(repeats, 1, 1)
+            negative_prompt_attention_mask = negative_prompt_embed_dict['prompt_attention_mask'].unsqueeze(0).repeat(repeats, 1)
 
         generated_images = generate_images(
             pipeline=pipeline,
@@ -404,7 +404,6 @@ def train():
 
     global_step = start_step + 1
 
-    # if accelerator.is_main_process:
     pipeline = None
     if config.eval.at_start or config.cmmd.at_start:
         model = prepare_for_inference(model)
@@ -412,14 +411,13 @@ def train():
             model=model,
             )
 
-    if config.eval.at_start:
-        log_eval_images(pipeline=pipeline, global_step=global_step)
+        if config.eval.at_start:
+            log_eval_images(pipeline=pipeline, global_step=global_step)
 
-    if config.cmmd.at_start:
-        log_cmmd(pipeline=pipeline, global_step=global_step)
-        logger.info('finish log cmmd ')
+        if config.cmmd.at_start:
+            log_cmmd(pipeline=pipeline, global_step=global_step)
+            logger.info('finish log cmmd ')
     
-    if pipeline:
         model = prepare_for_training(model)
         del pipeline
         flush()
@@ -465,7 +463,7 @@ def train():
                 optimizer.step()
                 lr_scheduler.step()
 
-            gathered_losses = accelerator.gather(loss_term['loss']).cpu().numpy()
+            gathered_losses = accelerator.gather(loss_term['loss']).detach().cpu().numpy()
             lr = lr_scheduler.get_last_lr()[0]
             logs = {'loss': gathered_losses.mean().item()}
             logs.update(lr=lr)
@@ -496,7 +494,7 @@ def train():
                 log_buffer.clear()
                 data_time_all = 0
                 logger.info('logging to accelerator...')
-                accelerator.log(log_buffer.output.items(), step=global_step)
+                accelerator.log(log_buffer.output, step=global_step)
 
             global_step += 1
             data_time_start = time.time()

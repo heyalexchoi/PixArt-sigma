@@ -66,9 +66,10 @@ def generate_images(
         batch_size = batch_prompt_embeds.size(0)  # Get the batch size from batch_prompt_embeds
         batch_negative_prompt_embeds = null_embed['prompt_embeds'].repeat(batch_size, 1, 1)
         batch_negative_prompt_attention_mask = null_embed['prompt_attention_mask'].repeat(batch_size, 1)
-        if negative_prompt_embeds and negative_prompt_attention_mask:
-            batch_negative_prompt_embeds = negative_prompt_embeds[i:i+batch_size].to(device) if negative_prompt_embeds else None
-            batch_negative_prompt_attention_mask = negative_prompt_attention_mask[i:i+batch_size].to(device) if negative_prompt_attention_mask else None
+        if negative_prompt_embeds is not None and negative_prompt_attention_mask is not None:
+            batch_negative_prompt_embeds = negative_prompt_embeds[i:i+batch_size].to(device)
+            batch_negative_prompt_attention_mask = negative_prompt_attention_mask[i:i+batch_size].to(device)
+            logger.info('using negative prompt embeds')
 
         batch_images = pipeline(
             width=width,
@@ -81,6 +82,7 @@ def generate_images(
             prompt_attention_mask=batch_prompt_attention_mask,
             negative_prompt_embeds=batch_negative_prompt_embeds,
             negative_prompt_attention_mask=batch_negative_prompt_attention_mask,
+            negative_prompt=None, # this has to be explicitly set to None if using negative prompt embeds
             output_type=output_type,
         ).images
         
