@@ -416,23 +416,22 @@ def train():
 
         if config.cmmd.at_start:
             log_cmmd(pipeline=pipeline, global_step=global_step)
-            logger.info('finish log cmmd ')
     
         model = prepare_for_training(model)
         del pipeline
         flush()
-        logger.info('finished w image gen pipeline')
+        logger.debug('finished w image gen pipeline')
 
     # Now you train the model
     for epoch in range(start_epoch + 1, config.num_epochs + 1):
-        logger.info('start epoch')
+        logger.debug('start epoch')
         data_time_start= time.time()
         data_time_all = 0
         for step, batch in enumerate(train_dataloader):
             if step < skip_step:
                 global_step += 1
                 continue    # skip data in the resumed ckpt
-            logger.info('step: {}'.format(step))
+            logger.debug('step: {}'.format(step))
             z = batch[0]
             clean_images = z * config.scale_factor
 
@@ -449,14 +448,14 @@ def train():
             data_time_all += time.time() - data_time_start
             with accelerator.accumulate(model):
                 # Predict the noise residual
-                logger.info('accumulating')
+                logger.debug('accumulating')
                 optimizer.zero_grad()
                 loss_term = train_diffusion.training_losses(
                     model, clean_images, timesteps, 
                     model_kwargs=dict(y=y, mask=y_mask, data_info=data_info)
                     )
                 loss = loss_term['loss'].mean()
-                logger.info('accumulating backward')
+                logger.debug('accumulating backward')
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
                     grad_norm = accelerator.clip_grad_norm_(model.parameters(), config.gradient_clip)

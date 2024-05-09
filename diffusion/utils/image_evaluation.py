@@ -53,9 +53,9 @@ def generate_images(
     images = []
 
     null_embed_path = get_path_for_encoded_prompt(
-            prompt='',
-            max_token_length=max_token_length,
-            )
+        prompt='',
+        max_token_length=max_token_length,
+        )
     null_embed = torch.load(null_embed_path)
         
     # Generate images in batches
