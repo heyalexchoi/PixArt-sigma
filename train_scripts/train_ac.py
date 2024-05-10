@@ -240,7 +240,8 @@ def log_cmmd(
     wait_for_everyone()
     if not accelerator.is_main_process:
         return
-    if not config.cmmd:
+    if not config.cmmd or not config.cmmd.train_sample_json \
+        or not config.cmmd.val_sample_json:
         logger.warning("No CMMD data provided. Skipping CMMD calculation.")
         return
     flush()
