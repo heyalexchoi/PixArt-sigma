@@ -167,7 +167,7 @@ def log_validation_loss(model, global_step):
     
     model.eval()
     validation_losses = []
-    step_bucket_losses = {} # key: bucket name, value: list of losses in that bucket. at end, changes to mean of losses
+    step_bucket_losses = {} # key: bucket name, value: list of each batch's mean losses for that bucket. 
     logger.info(f"logging validation loss for {len(val_dataset)} images")
     for batch in val_dataloader:
         z = batch[0]
@@ -197,6 +197,7 @@ def log_validation_loss(model, global_step):
                 gathered_timesteps=accelerator.gather(timesteps).cpu().numpy(),
                 gathered_losses=gathered_losses,
             )
+            # adds this batch's mean losses to each step bucket
             for bucket_name, bucket_loss in step_bucket_mean_loss.items():
                 if bucket_name not in step_bucket_losses:
                     step_bucket_losses[bucket_name] = []
@@ -204,11 +205,11 @@ def log_validation_loss(model, global_step):
 
     validation_loss = np.mean(validation_losses)
     logs = {"validation_loss": validation_loss}
+    # get mean of step bucket losses across batches
     for bucket_name, bucket_losses in step_bucket_losses.items():
         bucket_mean_loss = np.mean(bucket_losses)
-        step_bucket_losses[bucket_name] = bucket_mean_loss
-
-    logs.update(step_bucket_losses)
+        logs[f'{bucket_name}_val_loss'] = bucket_mean_loss
+        
     info = f"Global Step {global_step}"
     info += ', '.join([f"{k}:{v:.4f}" for k, v in logs.items()])
     logger.info(info)
