@@ -217,9 +217,9 @@ def log_validation_loss(model, global_step):
 
     model.train()
 
-# this used anywhere?
 def get_cmmd_train_and_val_samples():
-    if not config.cmmd:
+    if not config.get('cmmd') or not config.cmmd.get('train_sample_json') \
+        or not config.cmmd.get('val_sample_json'):
         logger.info("No CMMD config provided. Skipping get_cmmd_train_and_val_samples")
         return [], []
 
@@ -240,8 +240,9 @@ def log_cmmd(
     wait_for_everyone()
     if not accelerator.is_main_process:
         return
-    if not config.cmmd or not config.cmmd.train_sample_json \
-        or not config.cmmd.val_sample_json:
+    
+    if not config.get('cmmd') or not config.cmmd.get('train_sample_json') \
+        or not config.cmmd.get('val_sample_json'):
         logger.warning("No CMMD data provided. Skipping CMMD calculation.")
         return
     flush()
@@ -519,8 +520,10 @@ def train():
         if (config.log_val_loss_epochs and epoch % config.log_val_loss_epochs == 0) or epoch == config.num_epochs:
             log_validation_loss(model=model, global_step=global_step)
         
-        should_log_eval = (config.eval.every_n_epochs and epoch % config.eval.every_n_epochs == 0) or epoch == config.num_epochs
-        should_log_cmmd = (config.cmmd.every_n_epochs and epoch % config.cmmd.every_n_epochs == 0) or epoch == config.num_epochs
+        should_log_eval = (config.eval.every_n_epochs and epoch % config.eval.every_n_epochs == 0) or \
+            (epoch == config.num_epochs and config.eval.at_end)
+        should_log_cmmd = (config.cmmd.every_n_epochs and epoch % config.cmmd.every_n_epochs == 0) or \
+            (epoch == config.num_epochs and config.cmmd.at_end)
 
         # if (should_log_eval or should_log_cmmd) and accelerator.is_main_process:
         if (should_log_eval or should_log_cmmd):
