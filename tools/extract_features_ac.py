@@ -36,6 +36,7 @@ from concurrent.futures import ProcessPoolExecutor, wait, as_completed
 logger = get_logger(__name__)
 
 sdxl_vae_path = 'madebyollin/sdxl-vae-fp16-fix'
+original_vae_path = 'stabilityai/sdxl-vae'
 
 def get_closest_ratio(height: float, width: float, ratios: dict):
     aspect_ratio = height / width
@@ -180,9 +181,11 @@ def extract_img_vae_multiscale(batch_size, device, num_workers):
     os.makedirs(vae_save_root, exist_ok=True)
     if device == 'cuda':
         accelerator = Accelerator(mixed_precision='fp16')
+        torch_dtype = torch.float16
     else:
         accelerator = Accelerator()
-    vae = AutoencoderKL.from_pretrained(f'{args.vae_models_dir}', torch_dtype=torch.float16).to(device)
+        torch_dtype = torch.float32
+    vae = AutoencoderKL.from_pretrained(f'{args.vae_models_dir}', torch_dtype=torch_dtype).to(device)
 
     aspect_ratio_type = {
         256: ASPECT_RATIO_256,
@@ -351,7 +354,7 @@ if __name__ == '__main__':
     vae_save_root = os.path.abspath(args.vae_save_root)
     t5_save_dir = args.t5_save_root
     vae_models_dir = args.vae_models_dir
-    if not vae_models_dir == sdxl_vae_path:
+    if not vae_models_dir in [sdxl_vae_path, original_vae_path]:
         raise ValueError(f"Unhandled VAE model: {vae_models_dir}")
     vae_type = 'sdxl'
     
