@@ -45,18 +45,15 @@ def get_closest_ratio(height: float, width: float, ratios: dict):
 # VAE feature extraction
 @DATASETS.register_module()
 class DatasetMS(InternalData):
-    def __init__(self, root, multi_scale, image_list_json=None, transform=None, 
-                 load_vae_feat=False, aspect_ratio_type=None, start_index=0,
+    def __init__(self, root, multi_scale, image_list_json=None,
+                 aspect_ratio_type=None, start_index=0,
                  end_index=100000000, **kwargs):
         if image_list_json is None:
             image_list_json = ['data_info.json']
         assert os.path.isabs(root), 'root must be a absolute path'
         self.root = root
-        self.transform = transform
-        self.load_vae_feat = load_vae_feat
         self.meta_data_clean = []
         self.img_samples = []
-        self.txt_feat_samples = []
         self.aspect_ratio = aspect_ratio_type
         assert self.aspect_ratio in [ASPECT_RATIO_1024, ASPECT_RATIO_512, ASPECT_RATIO_256]
         self.ratio_index = {}
@@ -70,6 +67,7 @@ class DatasetMS(InternalData):
         for json_file in image_list_json:
             meta_data = self.load_json(os.path.join(self.root, 'partition', json_file))
             logger.info(f'json_file: {json_file} has {len(meta_data)} meta_data')
+            # filter by ratio and already extracted VAE features
             for item in meta_data:
                 if item['ratio'] <= 4:
                     sample_path = os.path.join(self.root, item['path'])
@@ -100,43 +98,36 @@ class DatasetMS(InternalData):
                 self.ratio_index[closest_ratio].append(i)
 
         # Set loader and extensions
-        if self.load_vae_feat:
-            raise ValueError("No VAE loader here")
         self.loader = default_loader
 
     def __getitem__(self, idx):
         data_info = {}
-        for _ in range(20):
-            try:
-                img_path = self.img_samples[idx]
-                img = self.loader(img_path)
-                if self.transform:
-                    img = self.transform(img)
-                # Calculate closest aspect ratio and resize & crop image[w, h]
-                if isinstance(img, Image.Image):
-                    h, w = (img.size[1], img.size[0])
-                    assert h, w == (self.meta_data_clean[idx]['height'], self.meta_data_clean[idx]['width'])
-                    closest_size, closest_ratio = get_closest_ratio(h, w, self.aspect_ratio)
-                    closest_size = list(map(lambda x: int(x), closest_size))
-                    # TODO: skip closest size etc for non multiscale
-                    transform = T.Compose([
-                        T.Lambda(lambda img: img.convert('RGB')),
-                        # TODO maybe: use single dimension to resize preserving aspect ratio. current 2 dimension resize can warp image.
-                        T.Resize(closest_size, interpolation=InterpolationMode.BICUBIC),  # Image.BICUBIC
-                        T.CenterCrop(closest_size),
-                        T.ToTensor(),
-                        T.Normalize([.5], [.5]),
-                    ])
-                    img = transform(img)
-                    data_info['img_hw'] = torch.tensor([h, w], dtype=torch.float32)
-                    data_info['aspect_ratio'] = closest_ratio
-                # change the path according to your data structure
-                return img, self.img_samples[idx]
-            except Exception as e:
-                logger.exception(f"Error details: {str(e)}")
-                idx = np.random.randint(len(self))
-        raise RuntimeError('Too many bad data.')
-
+        try:
+            img_path = self.img_samples[idx]
+            img = self.loader(img_path)
+            # Calculate closest aspect ratio and resize & crop image[w, h]
+            if isinstance(img, Image.Image):
+                h, w = (img.size[1], img.size[0])
+                assert h, w == (self.meta_data_clean[idx]['height'], self.meta_data_clean[idx]['width'])
+                closest_size, closest_ratio = get_closest_ratio(h, w, self.aspect_ratio)
+                closest_size = list(map(lambda x: int(x), closest_size))
+                # TODO: non-multiscale transformation: crop / resize to square and skip closest size part
+                transform = T.Compose([
+                    T.Lambda(lambda img: img.convert('RGB')),
+                    # TODO maybe: use single dimension to resize preserving aspect ratio. current 2 dimension resize can warp image.
+                    T.Resize(closest_size, interpolation=InterpolationMode.BICUBIC),  # Image.BICUBIC
+                    T.CenterCrop(closest_size),
+                    T.ToTensor(),
+                    T.Normalize([.5], [.5]),
+                ])
+                img = transform(img)
+                data_info['img_hw'] = torch.tensor([h, w], dtype=torch.float32)
+                data_info['aspect_ratio'] = closest_ratio
+            # change the path according to your data structure
+            return img, self.img_samples[idx]
+        except Exception as e:
+            logger.exception(f"Error details: {str(e)}")
+        
     def get_data_info(self, idx):
         data_info = self.meta_data_clean[idx]
         return {'height': data_info['height'], 'width': data_info['width']}
@@ -183,11 +174,14 @@ def inference(vae, dataloader, vae_save_root):
         timer.log()
 
 
-def extract_img_vae_multiscale(batch_size=1):
+def extract_img_vae_multiscale(batch_size, device, num_workers):
     assert image_resize in [256, 512, 1024]
     os.umask(0o000)  # file permission: 666; dir permission: 777
     os.makedirs(vae_save_root, exist_ok=True)
-    accelerator = Accelerator(mixed_precision='fp16')
+    if device == 'cuda':
+        accelerator = Accelerator(mixed_precision='fp16')
+    else:
+        accelerator = Accelerator()
     vae = AutoencoderKL.from_pretrained(f'{args.vae_models_dir}', torch_dtype=torch.float16).to(device)
 
     aspect_ratio_type = {
@@ -204,7 +198,7 @@ def extract_img_vae_multiscale(batch_size=1):
     sampler = AspectRatioBatchSampler(sampler=RandomSampler(dataset), dataset=dataset, batch_size=batch_size, aspect_ratios=dataset.aspect_ratio, ratio_nums=dataset.ratio_nums)
 
     # create DataLoader
-    dataloader = DataLoader(dataset, batch_sampler=sampler, num_workers=13, pin_memory=True)
+    dataloader = DataLoader(dataset, batch_sampler=sampler, num_workers=num_workers, pin_memory=True)
     dataloader = accelerator.prepare(dataloader, )
 
     inference(vae, dataloader, vae_save_root=vae_save_root)
@@ -309,7 +303,7 @@ def async_save_embedding(output_path, emb_dict):
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--multi_scale", action='store_true', default=False, help="multi-scale feature extraction")
+    # parser.add_argument("--multi_scale", action='store_true', default=False, help="multi-scale feature extraction")
     parser.add_argument("--img_size", default=512, type=int, choices=[256, 512, 1024], help="image scale for multi-scale feature extraction")
     parser.add_argument('--vae_batch_size', default=1, type=int)
     parser.add_argument('--t5_batch_size', default=1, type=int)
@@ -332,15 +326,28 @@ def get_args():
 
     ### for multi-scale(ms) vae feauture extraction
     parser.add_argument('--json_file', type=str)
+
+    # override device
+    parser.add_argument('--device', default='cuda', type=str, help="device to use for feature extraction")
     return parser.parse_args()
 
 
 if __name__ == '__main__':
 
     args = get_args()
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    device = 'cuda'
+    if args.device == 'mps':
+        if torch.backends.mps.is_available() and torch.backends.mps.is_built():
+            device = 'mps'
+        else:
+            logger.warning("MPS is not available. Using cuda instead.")
+    if args.device == 'cuda' and not torch.cuda.is_available():
+        logger.warning("CUDA is not available. Using cpu instead.")
+        device = 'cpu'
+
     image_resize = args.img_size
-    multi_scale = args.multi_scale
+    multi_scale = True
     vae_save_root = os.path.abspath(args.vae_save_root)
     t5_save_dir = args.t5_save_root
     vae_models_dir = args.vae_models_dir
@@ -389,11 +396,15 @@ if __name__ == '__main__':
         if not multi_scale:
             # basically seemed like the two did the same thing except one code path was shittier
             # and the non-multi-scale cropped to square instead of looking for nearest aspect ratio
-            logger.warning('Single scale feature extraction is not supported currently. Images will not be forced into squares.')
-
+            raise ValueError("Single scale feature extraction is not supported currently.")
+            
         # recommend bs = 1 for AspectRatioBatchSampler
         # not sure why bs = 1 is recommended. bigger batches are used in training. try higher.
-        extract_img_vae_multiscale(batch_size=vae_batch_size)
+        extract_img_vae_multiscale(
+            batch_size=vae_batch_size, 
+            device=device,
+            num_workers=max_workers,
+            )
     
     if t5_save_futures:
         # Use tqdm with as_completed to show progress
