@@ -1,3 +1,24 @@
+"""
+Example to extract VAE only at 256 image size:
+
+python tools/extract_features_ac.py \
+    --skip_t5 \
+    --img_size=256 \
+    --vae_batch_size=$VAE_BATCH_SIZE_256 \
+    --max_workers=24 \
+    --json_file=$JSON_PATH \
+    --vae_save_root="$OUTPUT_DIR/img_vae_features"  \
+    --t5_batch_size=600 \
+    --t5_max_token_length=300 \
+    --t5_save_root "$OUTPUT_DIR/caption_feature_wmask" \
+    --dataset_root "$TRAINING_DATA_DIR" \
+
+On M1 Mac, specify 'mps' device and the original full precision sdxl vae:
+
+python tools/extract_features_ac.py \
+    --device='mps'\
+    --vae_models_dir='stabilityai/sdxl-vae'\
+"""
 import os
 from pathlib import Path
 import sys
