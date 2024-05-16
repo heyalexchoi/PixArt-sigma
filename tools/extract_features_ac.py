@@ -130,14 +130,29 @@ class DatasetMS(InternalData):
             # Calculate closest aspect ratio and resize & crop image[w, h]
             if isinstance(img, Image.Image):
                 h, w = (img.size[1], img.size[0])
+                original_aspect_ratio = h / w
                 assert h, w == (self.meta_data_clean[idx]['height'], self.meta_data_clean[idx]['width'])
-                closest_size, closest_ratio = get_closest_ratio(h, w, self.aspect_ratio)
-                closest_size = list(map(lambda x: int(x), closest_size))
                 # TODO: non-multiscale transformation: crop / resize to square and skip closest size part
+
+                # multiscale bucketing should resize image down to the closest size and ratio
+                # we do this by resizing first, preserving original aspect ratio, then center cropping off the rest
+                
+                # closest_size is [h, w]
+                closest_size, closest_ratio = get_closest_ratio(h, w, self.aspect_ratio)
+                closest_size = list(map(lambda x: int(x), closest_size))                
+
+                # target ratio is taller than original ratio, which means we will be cropping the width
+                # so we should resize the height to the target height
+                if closest_ratio > original_aspect_ratio:
+                    new_height = int(closest_size[0])
+                    new_width = int(new_height / original_aspect_ratio)
+                else:
+                    new_width = int(closest_size[1])
+                    new_height = int(new_width * original_aspect_ratio)
+                
                 transform = T.Compose([
                     T.Lambda(lambda img: img.convert('RGB')),
-                    # TODO maybe: use single dimension to resize preserving aspect ratio. current 2 dimension resize can warp image.
-                    T.Resize(closest_size, interpolation=InterpolationMode.BICUBIC),  # Image.BICUBIC
+                    T.Resize([new_height, new_width], interpolation=InterpolationMode.BICUBIC),
                     T.CenterCrop(closest_size),
                     T.ToTensor(),
                     T.Normalize([.5], [.5]),
