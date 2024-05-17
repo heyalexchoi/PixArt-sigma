@@ -452,7 +452,7 @@ if __name__ == '__main__':
                 result = future.result()
                 # Optionally process or log result here
             except Exception as exc:
-                print(f"T5 Save Embedding Task generated an exception: {exc}")
+                logger.exception(f"T5 Save Embedding Task generated an exception: {exc}")
 
         # wait for all_save_futures 
         done, not_done = wait(t5_save_futures)  # This will block until all futures are done
