@@ -264,7 +264,7 @@ def extract_caption_t5_batch(batch, tokenizer, text_encoder, t5_save_dir, t5_max
         # caption_embs, emb_masks = t5.get_text_embeddings(captions)
         caption_tokens = tokenizer(
             captions,
-            max_length=args.max_length, 
+            max_length=t5_max_token_length, 
             padding="max_length", 
             truncation=True, 
             return_tensors="pt"
