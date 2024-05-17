@@ -85,14 +85,19 @@ class DatasetMS(InternalData):
             self.ratio_nums[float(k)] = 0      # used for batch-sampler
 
         vae_already_processed = []
+        missing_file_paths = []
         image_list_json = image_list_json if isinstance(image_list_json, list) else [image_list_json]
         for json_file in image_list_json:
             meta_data = self.load_json(os.path.join(self.root, 'partition', json_file))
             logger.info(f'json_file: {json_file} has {len(meta_data)} meta_data')
-            # filter by ratio and already extracted VAE features
+            
+            # filter by ratio, missing files, and already extracted VAE features
             for item in meta_data:
                 if item['ratio'] <= 4:
                     sample_path = os.path.join(self.root, item['path'])
+                    if not os.path.exists(sample_path):
+                        missing_file_paths.append(sample_path)
+                        continue
                     # this dataset seems to be for multiscale vae extraction only
                     output_file_path = get_vae_feature_path(
                         resolution=image_resize,
@@ -108,7 +113,8 @@ class DatasetMS(InternalData):
                     else:
                         vae_already_processed.append(sample_path)
 
-        logger.info(f"VAE processing skipping {len(vae_already_processed)} images already processed")
+        logger.info(f"VAE processing skipping {len(vae_already_processed)} images already processed"
+                    f" and {len(missing_file_paths)} missing files")
 
         self.img_samples = self.img_samples[start_index: end_index]
         # scan the dataset for ratio static
@@ -163,7 +169,7 @@ class DatasetMS(InternalData):
             # change the path according to your data structure
             return img, self.img_samples[idx]
         except Exception as e:
-            logger.exception(f"Error details: {str(e)}")
+            logger.exception("DatasetMS.__getitem__ error")
         
     def get_data_info(self, idx):
         data_info = self.meta_data_clean[idx]
