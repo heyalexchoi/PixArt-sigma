@@ -500,7 +500,8 @@ def train():
             global_step += 1
             data_time_start = time.time()
 
-            if global_step % config.save_model_steps == 0:
+            # STEP END actions: save, log val loss, eval images, cmmd
+            if config.save_model_steps and global_step % config.save_model_steps == 0:
                 save_state(
                     global_step=global_step,
                     epoch=epoch,
@@ -508,7 +509,28 @@ def train():
                     optimizer=optimizer,
                     lr_scheduler=lr_scheduler,
                 )
+            if config.log_val_loss_steps and global_step % config.log_val_loss_steps == 0:
+                log_validation_loss(model=model, global_step=global_step)
+            
+            should_log_eval = (config.eval.every_n_steps and epoch % config.eval.every_n_steps == 0)
+            should_log_cmmd = (config.cmmd.every_n_steps and epoch % config.cmmd.every_n_steps == 0)
 
+            if (should_log_eval or should_log_cmmd):
+                model = prepare_for_inference(model)
+                pipeline = _get_image_gen_pipeline(
+                    model=model,
+                    )
+                if should_log_eval:
+                    log_eval_images(pipeline=pipeline, global_step=global_step)
+                
+                if should_log_cmmd:
+                    log_cmmd(pipeline=pipeline, global_step=global_step)
+                
+                model = prepare_for_training(model)
+                del pipeline
+                flush()
+
+        # EPOCH END actions: save, log val loss, eval images, cmmd
         if (config.save_model_epochs and epoch % config.save_model_epochs == 0) or epoch == config.num_epochs:
             save_state(
                 global_step=global_step,
@@ -525,7 +547,6 @@ def train():
         should_log_cmmd = (config.cmmd.every_n_epochs and epoch % config.cmmd.every_n_epochs == 0) or \
             (epoch == config.num_epochs and config.cmmd.at_end)
 
-        # if (should_log_eval or should_log_cmmd) and accelerator.is_main_process:
         if (should_log_eval or should_log_cmmd):
             model = prepare_for_inference(model)
             pipeline = _get_image_gen_pipeline(
@@ -540,8 +561,6 @@ def train():
             model = prepare_for_training(model)
             del pipeline
             flush()
-        # accelerator.wait_for_everyone()
-        # wait_for_everyone()
 
 def _get_image_gen_pipeline(model):
     diffusers_transformer = convert_net_to_diffusers(
