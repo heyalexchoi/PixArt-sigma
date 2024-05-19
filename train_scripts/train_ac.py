@@ -161,7 +161,7 @@ def log_eval_images(pipeline, global_step):
 
 @torch.inference_mode()
 def log_validation_loss(model, global_step):
-    if not val_dataloader:
+    if not val_dataloaders or len(val_dataloaders) == 0:
         logger.warning("No validation data provided. Skipping validation.")
         return
     
@@ -169,46 +169,52 @@ def log_validation_loss(model, global_step):
     validation_losses = []
     step_bucket_losses = {} # key: bucket name, value: list of each batch's mean losses for that bucket. 
     logger.info(f"logging validation loss for {len(val_dataset)} images")
-    for batch in val_dataloader:
-        z = batch[0]
-        latents = (z * config.scale_factor)
+    for val_dataloader in val_dataloaders:
+        for batch in val_dataloader:
+            z = batch[0]
+            latents = (z * config.scale_factor)
 
-        y = batch[1]
-        y_mask = batch[2]
-        
-        data_info = batch[3]
+            y = batch[1]
+            y_mask = batch[2]
+            
+            data_info = batch[3]
 
-        # Sample multiple timesteps for each image
-        bs = latents.shape[0]
-        timesteps = torch.randint(0, config.train_sampling_steps, (bs,), device=latents.device).long()
+            # Sample multiple timesteps for each image
+            bs = latents.shape[0]
+            timesteps = torch.randint(0, config.train_sampling_steps, (bs,), device=latents.device).long()
 
-        # Predict the noise residual and compute the validation loss
-        with torch.no_grad():
-            loss_term = train_diffusion.training_losses(
-                model, latents, timesteps, 
-                model_kwargs=dict(y=y, mask=y_mask, data_info=data_info)
+            # Predict the noise residual and compute the validation loss
+            with torch.no_grad():
+                loss_term = train_diffusion.training_losses(
+                    model, latents, timesteps, 
+                    model_kwargs=dict(y=y, mask=y_mask, data_info=data_info)
+                    )
+                gathered_losses = accelerator.gather(loss_term['loss']).cpu().numpy()
+                mean_loss = gathered_losses.mean()
+                # loss = loss_term['loss'].mean()
+                # validation_losses.append(accelerator.gather(loss).cpu().numpy())
+                validation_losses.append(mean_loss)
+                step_bucket_mean_loss = get_step_bucket_loss(
+                    gathered_timesteps=accelerator.gather(timesteps).cpu().numpy(),
+                    gathered_losses=gathered_losses,
                 )
-            gathered_losses = accelerator.gather(loss_term['loss']).cpu().numpy()
-            mean_loss = gathered_losses.mean()
-            # loss = loss_term['loss'].mean()
-            # validation_losses.append(accelerator.gather(loss).cpu().numpy())
-            validation_losses.append(mean_loss)
-            step_bucket_mean_loss = get_step_bucket_loss(
-                gathered_timesteps=accelerator.gather(timesteps).cpu().numpy(),
-                gathered_losses=gathered_losses,
-            )
-            # adds this batch's mean losses to each step bucket
-            for bucket_name, bucket_loss in step_bucket_mean_loss.items():
-                if bucket_name not in step_bucket_losses:
-                    step_bucket_losses[bucket_name] = []
-                step_bucket_losses[bucket_name].append(bucket_loss)
+                # adds this batch's mean losses to each step bucket
+                for bucket_name, bucket_loss in step_bucket_mean_loss.items():
+                    if bucket_name not in step_bucket_losses:
+                        step_bucket_losses[bucket_name] = []
+                    step_bucket_losses[bucket_name].append(bucket_loss)
 
-    validation_loss = np.mean(validation_losses)
-    logs = {"validation_loss": validation_loss}
-    # get mean of step bucket losses across batches
-    for bucket_name, bucket_losses in step_bucket_losses.items():
-        bucket_mean_loss = np.mean(bucket_losses)
-        logs[f'{bucket_name}_val_loss'] = bucket_mean_loss
+        validation_loss = np.mean(validation_losses)
+        logs = {"val_loss": validation_loss}
+        dataset_name = val_dataloader.dataset.name
+        if dataset_name:
+            logs.update({
+                f'val_loss_{dataset_name}': validation_loss,
+            })
+        # get mean of step bucket losses across batches
+        for bucket_name, bucket_losses in step_bucket_losses.items():
+            bucket_mean_loss = np.mean(bucket_losses)
+            logs[f'val_loss_{bucket_name}'] = bucket_mean_loss
         
     info = f"Global Step {global_step}"
     info += ', '.join([f"{k}:{v:.4f}" for k, v in logs.items()])
@@ -217,21 +223,43 @@ def log_validation_loss(model, global_step):
 
     model.train()
 
-def get_cmmd_train_and_val_samples():
-    if not config.get('cmmd') or not config.cmmd.get('train_sample_json') \
-        or not config.cmmd.get('val_sample_json'):
-        logger.info("No CMMD config provided. Skipping get_cmmd_train_and_val_samples")
-        return [], []
+def get_cmmd_samples():
+    """
+    returns list of cmmd sample groups,
+    each group is a dict with 'items' and 'name'
+    and each of those items is a pixart type item with 'path' and 'prompt'
+
+    expects cmmd config to have 'sample_jsons' list of dicts, each with 'path' and 'name'
+    """
+    if not config.get('cmmd') or not config.cmmd.get('sample_jsons'):
+        logger.info("No CMMD config provided. Skipping get_cmmd_samples")
+        return []
 
     # deterministically sample image-text pairs from train and val sets
     def load_json(file_path):
         with open(file_path, 'r') as f:
             return json.load(f)
     
-    train_items = load_json(os.path.join(config.data.root, config.cmmd.train_sample_json))
-    val_items = load_json(os.path.join(config.data.root, config.cmmd.val_sample_json))
-    
-    return train_items, val_items
+    sample_jsons = config.cmmd.get('sample_jsons')
+    # items used to simply be list of items from json
+    # but now need list of named objects, each with list of items
+    # train_sample_jsons = config.cmmd.get('train_sample_jsons')
+    # val_sample_jsons = config.cmmd.get('val_sample_jsons')
+
+    # train_items = []
+    # val_items = []
+
+    def build_group(dict):
+        items = load_json(os.path.join(config.data.root, dict['path']))
+        return {
+            'items': items,
+            'name': dict['name'],
+        }
+
+    groups = [build_group(dict) for dict in sample_jsons]
+    # val_items = [build_item(dict) for dict in val_sample_jsons]    
+
+    return groups
 
 def log_cmmd(
         pipeline,
@@ -241,15 +269,15 @@ def log_cmmd(
     if not accelerator.is_main_process:
         return
     
-    if not config.get('cmmd') or not config.cmmd.get('train_sample_json') \
-        or not config.cmmd.get('val_sample_json'):
+    samples = get_cmmd_samples()
+    if not samples:
         logger.warning("No CMMD data provided. Skipping CMMD calculation.")
         return
     flush()
     
     data_root = config.data.root
     t5_save_dir = config.data.t5_save_dir
-    train_items, val_items = get_cmmd_train_and_val_samples()
+    
     negative_prompt = config.cmmd.get('negative_prompt')
 
     # generate images using the text captions
@@ -325,36 +353,36 @@ def log_cmmd(
         )
         return generated_images, cmmd_score
     logger.info('generating images and cmmd scores...')
-    generated_train_images, train_cmmd_score = generate_images_and_cmmd(train_items)
-    generated_val_images, val_cmmd_score = generate_images_and_cmmd(val_items)
 
-    for tracker in accelerator.trackers:
-        max_images_logged = config.cmmd.get('max_images_logged', 10)
-        if tracker.name == 'wandb':
-            train_prompts = [item['prompt'] for item in train_items]
-            val_prompts = [item['prompt'] for item in val_items]
-            wandb_train_images = [wandb.Image(
-                image,
-                caption=prompt,
-                ) for image, prompt in list(zip(generated_train_images, train_prompts))[:max_images_logged]]
-            wandb_val_images = [wandb.Image(
-                image,
-                caption=prompt,
-                ) for image, prompt in list(zip(generated_val_images, val_prompts))[:max_images_logged]]
-            logger.info('logging cmmd images to wandb...')
-            tracker.log({
-                "generated_train_images": wandb_train_images, 
-                "generated_val_images": wandb_val_images,
-                }, 
-                step=global_step,
-                )
-        else:
-            logger.warn(f"CMMD logging not implemented for {tracker.name}")
-    logger.info('logging cmmd scores to wandb...')
-    accelerator.log({
-        "train_cmmd_score": train_cmmd_score,
-        "val_cmmd_score": val_cmmd_score,
-        }, step=global_step)
+    for group in samples:
+        name = group['name']
+        items = group['items']
+        logger.info(f'generating images and cmmd scores for group {name}...')
+        generated_images, cmmd_score = generate_images_and_cmmd(items)
+
+        for tracker in accelerator.trackers:
+            max_images_logged = config.cmmd.get('max_images_logged', 10)
+            if tracker.name == 'wandb':
+                prompts = [item['prompt'] for item in items]
+                wandb_images = [wandb.Image(
+                    image,
+                    caption=prompt,
+                    ) for image, prompt in list(zip(generated_images, prompts))[:max_images_logged]]
+                logger.info(f'logging {name} cmmd images to wandb...')
+                tracker.log({
+                    f"cmmd_gen_images_{name}": wandb_images, 
+                    }, 
+                    step=global_step,
+                    )
+            else:
+                logger.warn(f"CMMD logging not implemented for {tracker.name}")
+
+        logger.info(f'logging cmmd scores for group {name} to wandb...')
+        accelerator.log({
+                f"cmmd_score_{name}": cmmd_score,
+            }, 
+            step=global_step
+        )
 
 def prepare_for_inference(model):
     model = accelerator.unwrap_model(model)
@@ -471,9 +499,10 @@ def train():
                 
                 mean_gathered_losses = gathered_losses.mean().item()
                 logs = {'loss': mean_gathered_losses}
-                if dataset.name:
+                dataset_name = train_dataloader.dataset.name
+                if dataset_name:
                     logs.update({
-                        f'{dataset.name}_loss': mean_gathered_losses,
+                        f'{dataset_name}_loss': mean_gathered_losses,
                     })
                 logs.update(lr=lr)
                 # mean bucket losses
