@@ -430,105 +430,112 @@ def train():
         logger.debug('start epoch')
         data_time_start= time.time()
         data_time_all = 0
-        for step, batch in enumerate(train_dataloader):
-            if step < skip_step:
-                global_step += 1
-                continue    # skip data in the resumed ckpt
-            logger.debug('step: {}'.format(step))
-            z = batch[0]
-            clean_images = z * config.scale_factor
+        for train_dataloader in train_dataloaders:
+            for step, batch in enumerate(train_dataloader):
+                if step < skip_step:
+                    global_step += 1
+                    continue    # skip data in the resumed ckpt
+                logger.debug('step: {}'.format(step))
+                z = batch[0]
+                clean_images = z * config.scale_factor
 
-            y = batch[1]
-            y_mask = batch[2]
+                y = batch[1]
+                y_mask = batch[2]
 
-            data_info = batch[3]
+                data_info = batch[3]
 
-            # Sample a random timestep for each image
-            bs = clean_images.shape[0]
-            timesteps = torch.randint(0, config.train_sampling_steps, (bs,), device=clean_images.device).long()
+                # Sample a random timestep for each image
+                bs = clean_images.shape[0]
+                timesteps = torch.randint(0, config.train_sampling_steps, (bs,), device=clean_images.device).long()
 
-            grad_norm = None
-            data_time_all += time.time() - data_time_start
-            with accelerator.accumulate(model):
-                # Predict the noise residual
-                logger.debug('accumulating')
-                optimizer.zero_grad()
-                loss_term = train_diffusion.training_losses(
-                    model, clean_images, timesteps, 
-                    model_kwargs=dict(y=y, mask=y_mask, data_info=data_info)
-                    )
-                loss = loss_term['loss'].mean()
-                logger.debug('accumulating backward')
-                accelerator.backward(loss)
-                if accelerator.sync_gradients:
-                    grad_norm = accelerator.clip_grad_norm_(model.parameters(), config.gradient_clip)
-                optimizer.step()
-                lr_scheduler.step()
+                grad_norm = None
+                data_time_all += time.time() - data_time_start
+                with accelerator.accumulate(model):
+                    # Predict the noise residual
+                    logger.debug('accumulating')
+                    optimizer.zero_grad()
+                    loss_term = train_diffusion.training_losses(
+                        model, clean_images, timesteps, 
+                        model_kwargs=dict(y=y, mask=y_mask, data_info=data_info)
+                        )
+                    loss = loss_term['loss'].mean()
+                    logger.debug('accumulating backward')
+                    accelerator.backward(loss)
+                    if accelerator.sync_gradients:
+                        grad_norm = accelerator.clip_grad_norm_(model.parameters(), config.gradient_clip)
+                    optimizer.step()
+                    lr_scheduler.step()
 
-            gathered_losses = accelerator.gather(loss_term['loss']).detach().cpu().numpy()
-            lr = lr_scheduler.get_last_lr()[0]
-            logs = {'loss': gathered_losses.mean().item()}
-            logs.update(lr=lr)
-            # mean bucket losses
-            step_bucket_mean_loss = get_step_bucket_loss(
-                gathered_timesteps=accelerator.gather(timesteps).cpu().numpy(),
-                gathered_losses=gathered_losses,
-            )
-            for bucket_name, bucket_loss in step_bucket_mean_loss.items():
-                logs[f'{bucket_name}_loss'] = bucket_loss
-            if grad_norm is not None:
-                logs.update(grad_norm=accelerator.gather(grad_norm).mean().item())
-            log_buffer.update(logs)
-
-            if (step + 1) % config.log_interval == 0 or (step + 1) == 1:
-                t = (time.time() - last_tic) / config.log_interval
-                t_d = data_time_all / config.log_interval
-                avg_time = (time.time() - time_start) / (global_step - start_step + 1)
-                eta = str(datetime.timedelta(seconds=int(avg_time * (total_steps - global_step - 1))))
-                eta_epoch = str(datetime.timedelta(seconds=int(avg_time * (len(train_dataloader) - step - 1))))
-                log_buffer.average()
-                info = f"Global Step: {global_step}. Epochs/Total: {epoch}/{config.num_epochs}. Current Epoch Steps: {step + 1}/{len(train_dataloader)}. total_eta: {eta}, " \
-                    f"epoch_eta:{eta_epoch}, time_all:{t:.3f}, time_data:{t_d:.3f}, lr:{lr:.3e}, "
-                info += f's:({model.module.h}, {model.module.w}), ' if hasattr(model, 'module') else f's:({model.h}, {model.w}), '                
-                info += ', '.join([f"{k}:{v:.4f}" for k, v in log_buffer.output.items()])
-                logger.info(info)
-                accelerator.log(log_buffer.output, step=global_step)
-                last_tic = time.time()
-                log_buffer.clear()
-                data_time_all = 0
+                gathered_losses = accelerator.gather(loss_term['loss']).detach().cpu().numpy()
+                lr = lr_scheduler.get_last_lr()[0]
                 
-            global_step += 1
-            data_time_start = time.time()
-
-            # STEP END actions: save, log val loss, eval images, cmmd
-            if config.save_model_steps and global_step % config.save_model_steps == 0:
-                save_state(
-                    global_step=global_step,
-                    epoch=epoch,
-                    model=model,
-                    optimizer=optimizer,
-                    lr_scheduler=lr_scheduler,
+                mean_gathered_losses = gathered_losses.mean().item()
+                logs = {'loss': mean_gathered_losses}
+                if dataset.name:
+                    logs.update({
+                        f'{dataset.name}_loss': mean_gathered_losses,
+                    })
+                logs.update(lr=lr)
+                # mean bucket losses
+                step_bucket_mean_loss = get_step_bucket_loss(
+                    gathered_timesteps=accelerator.gather(timesteps).cpu().numpy(),
+                    gathered_losses=gathered_losses,
                 )
-            if config.log_val_loss_steps and global_step % config.log_val_loss_steps == 0:
-                log_validation_loss(model=model, global_step=global_step)
-            
-            should_log_eval = (config.eval.every_n_steps and epoch % config.eval.every_n_steps == 0)
-            should_log_cmmd = (config.cmmd.every_n_steps and epoch % config.cmmd.every_n_steps == 0)
+                for bucket_name, bucket_loss in step_bucket_mean_loss.items():
+                    logs[f'{bucket_name}_loss'] = bucket_loss
+                if grad_norm is not None:
+                    logs.update(grad_norm=accelerator.gather(grad_norm).mean().item())
+                log_buffer.update(logs)
 
-            if (should_log_eval or should_log_cmmd):
-                model = prepare_for_inference(model)
-                pipeline = _get_image_gen_pipeline(
-                    model=model,
+                if (step + 1) % config.log_interval == 0 or (step + 1) == 1:
+                    t = (time.time() - last_tic) / config.log_interval
+                    t_d = data_time_all / config.log_interval
+                    avg_time = (time.time() - time_start) / (global_step - start_step + 1)
+                    eta = str(datetime.timedelta(seconds=int(avg_time * (total_steps - global_step - 1))))
+                    eta_epoch = str(datetime.timedelta(seconds=int(avg_time * (steps_per_epoch - step - 1))))
+                    log_buffer.average()
+                    info = f"Global Step: {global_step}. Epochs/Total: {epoch}/{config.num_epochs}. Current Epoch Steps: {step + 1}/{steps_per_epoch}. total_eta: {eta}, " \
+                        f"epoch_eta:{eta_epoch}, time_all:{t:.3f}, time_data:{t_d:.3f}, lr:{lr:.3e}, "
+                    info += f's:({model.module.h}, {model.module.w}), ' if hasattr(model, 'module') else f's:({model.h}, {model.w}), '                
+                    info += ', '.join([f"{k}:{v:.4f}" for k, v in log_buffer.output.items()])
+                    logger.info(info)
+                    accelerator.log(log_buffer.output, step=global_step)
+                    last_tic = time.time()
+                    log_buffer.clear()
+                    data_time_all = 0
+                    
+                global_step += 1
+                data_time_start = time.time()
+
+                # STEP END actions: save, log val loss, eval images, cmmd
+                if config.save_model_steps and global_step % config.save_model_steps == 0:
+                    save_state(
+                        global_step=global_step,
+                        epoch=epoch,
+                        model=model,
+                        optimizer=optimizer,
+                        lr_scheduler=lr_scheduler,
                     )
-                if should_log_eval:
-                    log_eval_images(pipeline=pipeline, global_step=global_step)
+                if config.log_val_loss_steps and global_step % config.log_val_loss_steps == 0:
+                    log_validation_loss(model=model, global_step=global_step)
                 
-                if should_log_cmmd:
-                    log_cmmd(pipeline=pipeline, global_step=global_step)
-                
-                model = prepare_for_training(model)
-                del pipeline
-                flush()
+                should_log_eval = (config.eval.every_n_steps and epoch % config.eval.every_n_steps == 0)
+                should_log_cmmd = (config.cmmd.every_n_steps and epoch % config.cmmd.every_n_steps == 0)
+
+                if (should_log_eval or should_log_cmmd):
+                    model = prepare_for_inference(model)
+                    pipeline = _get_image_gen_pipeline(
+                        model=model,
+                        )
+                    if should_log_eval:
+                        log_eval_images(pipeline=pipeline, global_step=global_step)
+                    
+                    if should_log_cmmd:
+                        log_cmmd(pipeline=pipeline, global_step=global_step)
+                    
+                    model = prepare_for_training(model)
+                    del pipeline
+                    flush()
 
         # EPOCH END actions: save, log val loss, eval images, cmmd
         if (config.save_model_epochs and epoch % config.save_model_epochs == 0) or epoch == config.num_epochs:
@@ -748,40 +755,63 @@ if __name__ == '__main__':
         for m in accelerator._models:
             m.clip_grad_norm_ = types.MethodType(clip_grad_norm_, m)
 
-    train_data = config.data
+    train_data = config.train_data
     val_data = config.val_data
 
     # build dataloader
     set_data_root(config.data_root)
-    dataset = build_dataset(
-        train_data, resolution=image_size, aspect_ratio_type=config.aspect_ratio_type,
-        # real_prompt_ratio=config.real_prompt_ratio,
-        null_embed_path=get_path_for_encoded_prompt('', max_length),
-        max_length=max_length, config=config,
-    )
+
+    train_datasets = [
+        build_dataset(
+            data_dict, resolution=image_size, aspect_ratio_type=config.aspect_ratio_type,
+            null_embed_path=get_path_for_encoded_prompt('', max_length),
+            max_length=max_length, config=config,
+        ) for data_dict in train_data
+    ]
+    train_dataloaders = []
+    # dataset = build_dataset(
+    #     train_data, resolution=image_size, aspect_ratio_type=config.aspect_ratio_type,
+    #     # real_prompt_ratio=config.real_prompt_ratio,
+    #     null_embed_path=get_path_for_encoded_prompt('', max_length),
+    #     max_length=max_length, config=config,
+    # )
     
-    val_dataset = None
-    val_dataloader = None
+    val_datasets = None
+    val_dataloaders = None
 
     if config.val_data:
-        val_dataset = build_dataset(
-            val_data, resolution=image_size, aspect_ratio_type=config.aspect_ratio_type,
-            max_length=max_length, config=config,
-        )
+        val_datasets = [
+            build_dataset(
+                data_dict, resolution=image_size, aspect_ratio_type=config.aspect_ratio_type,
+                max_length=max_length, config=config,
+            ) for data_dict in val_data
+        ]
+        val_dataloaders = []
+        # val_dataset = build_dataset(
+        #     val_data, resolution=image_size, aspect_ratio_type=config.aspect_ratio_type,
+        #     max_length=max_length, config=config,
+        # )
     if config.multi_scale:
-        batch_sampler = AspectRatioBatchSampler(sampler=RandomSampler(dataset), dataset=dataset,
-                                                batch_size=config.train_batch_size, aspect_ratios=dataset.aspect_ratio, drop_last=True,
-                                                ratio_nums=dataset.ratio_nums, config=config, valid_num=config.valid_num)
-        train_dataloader = build_dataloader(dataset, batch_sampler=batch_sampler, num_workers=config.num_workers)
+        
+        for dataset in train_datasets:
+            batch_sampler = AspectRatioBatchSampler(sampler=RandomSampler(dataset), dataset=dataset,
+                                                    batch_size=config.train_batch_size, aspect_ratios=dataset.aspect_ratio, drop_last=True,
+                                                    ratio_nums=dataset.ratio_nums, config=config, valid_num=config.valid_num)
+            train_dataloader = build_dataloader(dataset, batch_sampler=batch_sampler, num_workers=config.num_workers)
+            train_dataloaders.append(train_dataloader)
 
-        if val_dataset:
-            val_batch_sampler = AspectRatioBatchSampler(sampler=RandomSampler(val_dataset), dataset=val_dataset,
-                                                batch_size=config.train_batch_size, aspect_ratios=dataset.aspect_ratio, drop_last=True,
-                                                ratio_nums=dataset.ratio_nums, config=config, valid_num=config.valid_num)
-            val_dataloader = build_dataloader(val_dataset, batch_sampler=val_batch_sampler, num_workers=config.num_workers)
+        if val_datasets:
+            for val_dataset in val_datasets:
+                val_batch_sampler = AspectRatioBatchSampler(sampler=RandomSampler(val_dataset), dataset=val_dataset,
+                                                    batch_size=config.train_batch_size, aspect_ratios=dataset.aspect_ratio, drop_last=True,
+                                                    ratio_nums=dataset.ratio_nums, config=config, valid_num=config.valid_num)
+                val_dataloader = build_dataloader(val_dataset, batch_sampler=val_batch_sampler, num_workers=config.num_workers)
+                val_dataloaders.append(val_dataloader)
 
     else:
-        train_dataloader = build_dataloader(dataset, num_workers=config.num_workers, batch_size=config.train_batch_size, shuffle=True)
+        for dataset in train_datasets:
+            train_dataloader = build_dataloader(dataset, num_workers=config.num_workers, batch_size=config.train_batch_size, shuffle=True)
+            train_dataloaders.append(train_dataloader)
 
     # build optimizer and lr scheduler
     lr_scale_ratio = 1
@@ -789,7 +819,15 @@ if __name__ == '__main__':
         lr_scale_ratio = auto_scale_lr(config.train_batch_size * get_world_size() * config.gradient_accumulation_steps,
                                        config.optimizer, **config.auto_lr)
     optimizer = build_optimizer(model, config.optimizer)
-    lr_scheduler = build_lr_scheduler(config, optimizer, train_dataloader, lr_scale_ratio)
+    
+    # lr_scheduler = build_lr_scheduler(config, optimizer, train_dataloader, lr_scale_ratio)
+    # shouldnt need train_dataloader for build lr scheduler. if i use cosine instead of constant
+    # may need to update with num steps since that is what it actually wants
+    lr_scheduler = build_lr_scheduler(
+        config=config, 
+        optimizer=optimizer, 
+        lr_scale_ratio=lr_scale_ratio,
+        )
 
     timestamp = time.strftime("%Y-%m-%d_%H:%M:%S", time.localtime())
 
@@ -803,7 +841,9 @@ if __name__ == '__main__':
     start_epoch = 0
     start_step = 0
     skip_step = config.skip_step or 0
-    total_steps = len(train_dataloader) * config.num_epochs
+    # total_steps = len(train_dataloader) * config.num_epochs
+    steps_per_epoch = sum(len(dataloader) for dataloader in train_dataloaders)
+    total_steps =  steps_per_epoch * config.num_epochs
 
     if config.resume_from is not None and config.resume_from['checkpoint'] is not None:
         logger.info(f"resuming from checkpoint {config.resume_from['checkpoint']}")
@@ -824,5 +864,5 @@ if __name__ == '__main__':
     # There is no specific order to remember, you just need to unpack the
     # objects in the same order you gave them to the prepare method.
     model = accelerator.prepare(model)
-    optimizer, train_dataloader, val_dataloader, lr_scheduler = accelerator.prepare(optimizer, train_dataloader, val_dataloader, lr_scheduler)
+    optimizer, train_dataloaders, val_dataloader, lr_scheduler = accelerator.prepare(optimizer, train_dataloaders, val_dataloader, lr_scheduler)
     train()

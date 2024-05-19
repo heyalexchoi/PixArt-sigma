@@ -27,6 +27,7 @@ def get_closest_ratio(height: float, width: float, ratios: dict):
 class InternalDataMSSigmaAC(InternalDataSigma):
     def __init__(self,
                  root,
+                 name,
                  image_list_json='data_info.json',
                  transform=None,
                  resolution=256,
@@ -47,6 +48,7 @@ class InternalDataMSSigmaAC(InternalDataSigma):
                  null_embed_path=None,
                  **kwargs):
         self.root = get_data_path(root)
+        self.name = name
         self.transform = transform
         self.load_vae_feat = load_vae_feat
         self.load_t5_feat = load_t5_feat
