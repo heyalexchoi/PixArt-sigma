@@ -235,12 +235,21 @@ def get_cmmd_samples():
         logger.info("No CMMD config provided. Skipping get_cmmd_samples")
         return []
 
+    data_root = config.data_root
+    sample_jsons = config.cmmd.get('sample_jsons')
+
     # deterministically sample image-text pairs from train and val sets
     def load_json(file_path):
         with open(file_path, 'r') as f:
             return json.load(f)
     
-    sample_jsons = config.cmmd.get('sample_jsons')
+    def build_group(dict):
+        items = load_json(os.path.join(data_root, dict['path']))
+        return {
+            'items': items,
+            'name': dict['name'],
+        }
+
     # items used to simply be list of items from json
     # but now need list of named objects, each with list of items
     # train_sample_jsons = config.cmmd.get('train_sample_jsons')
@@ -249,12 +258,6 @@ def get_cmmd_samples():
     # train_items = []
     # val_items = []
 
-    def build_group(dict):
-        items = load_json(os.path.join(config.data.root, dict['path']))
-        return {
-            'items': items,
-            'name': dict['name'],
-        }
 
     groups = [build_group(dict) for dict in sample_jsons]
     # val_items = [build_item(dict) for dict in val_sample_jsons]    
@@ -275,8 +278,8 @@ def log_cmmd(
         return
     flush()
     
-    data_root = config.data.root
-    t5_save_dir = config.data.t5_save_dir
+    data_root = config.data_root
+    t5_save_dir = config.t5_save_dir
     
     negative_prompt = config.cmmd.get('negative_prompt')
 
@@ -856,6 +859,7 @@ if __name__ == '__main__':
         config=config, 
         optimizer=optimizer, 
         lr_scale_ratio=lr_scale_ratio,
+        train_dataloader=None, # noop for constant lr
         )
 
     timestamp = time.strftime("%Y-%m-%d_%H:%M:%S", time.localtime())
