@@ -29,7 +29,7 @@ from diffusion.data.builder import build_dataset, build_dataloader, set_data_roo
 from diffusion.model.builder import build_model
 from diffusion.utils.checkpoint import save_checkpoint
 from diffusion.utils.checkpoint_ac import load_checkpoint
-from diffusion.utils.data_sampler import AspectRatioBatchSampler
+from diffusion.utils.data_sampler_ac import AspectRatioBatchSampler
 from diffusion.utils.dist_utils import synchronize, get_world_size, clip_grad_norm_, flush
 from diffusion.utils.logger_ac import get_logger
 from diffusion.utils.logger import get_root_logger, rename_file_with_creation_time
@@ -171,6 +171,11 @@ def log_validation_loss(model, global_step):
     logger.info(f"logging validation loss for {len(val_dataset)} images")
     for val_dataloader in val_dataloaders:
         for batch in val_dataloader:
+            # accelerate dataloader yields None when it is finished. need to break after that or get exception.
+            # I think bc drop_last in batch sampler throws off the number of batches
+            if batch is None or len(batch) == 0:
+                logger.warning('log_validation_loss breaking after encountering empty batch.')
+                break
             z = batch[0]
             latents = (z * config.scale_factor)
 
@@ -467,6 +472,12 @@ def train():
                 if step < skip_step:
                     global_step += 1
                     continue    # skip data in the resumed ckpt
+                # when using drop_last with batch sampler, we sometimes get empty batch
+                if batch is None or len(batch) == 0:
+                    # accelerate dataloader yields None when it is finished. need to break after that or get exception.
+                    # I think bc drop_last in batch sampler throws off the number of batches
+                    logger.warning('train break after encountering empty batch.')
+                    break
                 logger.debug('step: {}'.format(step))
                 z = batch[0]
                 clean_images = z * config.scale_factor
