@@ -739,7 +739,7 @@ if __name__ == '__main__':
 
     logger.info(f"Config: \n{config.pretty_text}")
     logger.info(f"World_size: {get_world_size()}, seed: {config.seed}")
-    logger.info(f"Initializing: {init_train} for training")
+    logger.info(f"Initializing: {init_train} for training. accelerator.num_processes: {accelerator.num_processes}")
     image_size = config.image_size  # @param [256, 512]
     latent_size = int(image_size) // 8
     pred_sigma = getattr(config, 'pred_sigma', True)
