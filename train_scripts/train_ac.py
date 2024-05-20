@@ -339,14 +339,15 @@ def log_cmmd(
         orig_image_paths = [os.path.join(data_root, item['path']) for item in items]
         # resize original images
         orig_images = [Image.open(image_path) for image_path in orig_image_paths]
-        transform = T.Compose([
-                T.Lambda(lambda img: img.convert('RGB')),
-                T.Resize(config.image_size, interpolation=InterpolationMode.BICUBIC),  # Image.BICUBIC
-                T.CenterCrop(config.image_size),
-                # T.ToTensor(),
-                # T.Normalize([.5], [.5]),
-            ])
-        orig_images = [transform(image) for image in orig_images]
+        # I believe clip image processor already resizes, crops, and normalizes
+        # transform = T.Compose([
+        #         T.Lambda(lambda img: img.convert('RGB')),
+        #         T.Resize(config.image_size, interpolation=InterpolationMode.BICUBIC),  # Image.BICUBIC
+        #         T.CenterCrop(config.image_size),
+        #         # T.ToTensor(),
+        #         # T.Normalize([.5], [.5]),
+        #     ])
+        # orig_images = [transform(image) for image in orig_images]
 
         cmmd_score = get_cmmd_for_images(
             ref_images=orig_images,
