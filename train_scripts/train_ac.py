@@ -563,8 +563,8 @@ def train():
                 if config.log_val_loss_steps and global_step % config.log_val_loss_steps == 0:
                     log_validation_loss(model=model, global_step=global_step)
                 
-                should_log_eval = (config.eval.every_n_steps and epoch % config.eval.every_n_steps == 0)
-                should_log_cmmd = (config.cmmd.every_n_steps and epoch % config.cmmd.every_n_steps == 0)
+                should_log_eval = (config.eval.every_n_steps and global_step % config.eval.every_n_steps == 0)
+                should_log_cmmd = (config.cmmd.every_n_steps and global_step % config.cmmd.every_n_steps == 0)
 
                 if (should_log_eval or should_log_cmmd):
                     model = prepare_for_inference(model)
