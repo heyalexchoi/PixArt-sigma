@@ -897,5 +897,7 @@ if __name__ == '__main__':
     # There is no specific order to remember, you just need to unpack the
     # objects in the same order you gave them to the prepare method.
     model = accelerator.prepare(model)
-    optimizer, train_dataloaders, val_dataloader, lr_scheduler = accelerator.prepare(optimizer, train_dataloaders, val_dataloader, lr_scheduler)
+    optimizer, lr_scheduler = accelerator.prepare(optimizer, lr_scheduler)
+    train_dataloaders = [accelerator.prepare(train_dataloader) for train_dataloader in train_dataloaders]
+    val_dataloaders = [accelerator.prepare(val_dataloader) for val_dataloader in val_dataloaders] if val_dataloaders else None
     train()
