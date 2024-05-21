@@ -71,8 +71,6 @@ def set_fsdp_env():
 @torch.inference_mode()
 def log_eval_images(pipeline, global_step):
     wait_for_everyone()
-    if not accelerator.is_main_process:
-        return
     if not (config.eval and 
             config.eval.batch_size and 
             config.eval.guidance_scale and
@@ -121,6 +119,7 @@ def log_eval_images(pipeline, global_step):
 
     images = generate_images(
         pipeline=pipeline,
+        accelerator=accelerator,
         prompt_embeds=prompt_embeds,
         prompt_attention_mask=prompt_attention_mask,
         negative_prompt_embeds=negative_prompt_embeds,
@@ -323,6 +322,7 @@ def log_cmmd(
 
         generated_images = generate_images(
             pipeline=pipeline,
+            accelerator=accelerator,
             prompt_embeds=caption_features,
             prompt_attention_mask=attention_masks,
             negative_prompt_embeds=negative_prompt_embeds,
