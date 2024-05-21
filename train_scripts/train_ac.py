@@ -166,10 +166,12 @@ def log_validation_loss(model, global_step):
         return
     
     model.eval()
-    validation_losses = []
+    logs = {}
+    all_validation_losses = []
     step_bucket_losses = {} # key: bucket name, value: list of each batch's mean losses for that bucket. 
     logger.info(f"logging validation loss for {len(val_dataset)} images")
     for val_dataloader in val_dataloaders:
+        dataset_validation_losses = []
         for batch in val_dataloader:
             # accelerate dataloader yields None when it is finished. need to break after that or get exception.
             # I think bc drop_last in batch sampler throws off the number of batches
@@ -196,9 +198,7 @@ def log_validation_loss(model, global_step):
                     )
                 gathered_losses = accelerator.gather(loss_term['loss']).cpu().numpy()
                 mean_loss = gathered_losses.mean()
-                # loss = loss_term['loss'].mean()
-                # validation_losses.append(accelerator.gather(loss).cpu().numpy())
-                validation_losses.append(mean_loss)
+                dataset_validation_losses.append(mean_loss)
                 step_bucket_mean_loss = get_step_bucket_loss(
                     gathered_timesteps=accelerator.gather(timesteps).cpu().numpy(),
                     gathered_losses=gathered_losses,
@@ -209,17 +209,22 @@ def log_validation_loss(model, global_step):
                         step_bucket_losses[bucket_name] = []
                     step_bucket_losses[bucket_name].append(bucket_loss)
 
-        validation_loss = np.mean(validation_losses)
-        logs = {"val_loss": validation_loss}
+        # gather val losses across datasets
+        all_validation_losses.extend(dataset_validation_losses)
+        # mean val loss for dataset
         dataset_name = val_dataloader.dataset.name
         if dataset_name:
-            logs.update({
-                f'val_loss_{dataset_name}': validation_loss,
-            })
-        # get mean of step bucket losses across batches
-        for bucket_name, bucket_losses in step_bucket_losses.items():
-            bucket_mean_loss = np.mean(bucket_losses)
-            logs[f'val_loss_{bucket_name}'] = bucket_mean_loss
+            dataset_validation_loss = np.mean(dataset_validation_losses)
+            logs[f'val_loss_{bucket_name}'] = dataset_validation_loss
+        
+    # mean val loss across datasets
+    mean_validation_loss = np.mean(all_validation_losses)
+    logs['val_loss'] = mean_validation_loss
+
+    # get mean of step bucket losses across batches and datasets
+    for bucket_name, bucket_losses in step_bucket_losses.items():
+        bucket_mean_loss = np.mean(bucket_losses)
+        logs[f'val_loss_{bucket_name}'] = bucket_mean_loss
         
     info = f"Global Step {global_step}"
     info += ', '.join([f"{k}:{v:.4f}" for k, v in logs.items()])
@@ -255,18 +260,8 @@ def get_cmmd_samples():
             'name': dict['name'],
         }
 
-    # items used to simply be list of items from json
-    # but now need list of named objects, each with list of items
-    # train_sample_jsons = config.cmmd.get('train_sample_jsons')
-    # val_sample_jsons = config.cmmd.get('val_sample_jsons')
-
-    # train_items = []
-    # val_items = []
-
-
     groups = [build_group(dict) for dict in sample_jsons]
-    # val_items = [build_item(dict) for dict in val_sample_jsons]    
-
+    
     return groups
 
 def log_cmmd(
