@@ -49,6 +49,7 @@ from torchvision.transforms.functional import InterpolationMode
 warnings.filterwarnings("ignore")  # ignore warning
 
 dtype_mapping = {
+        'bf16': torch.bfloat16,
         'fp16': torch.float16,
         'fp32': torch.float32,
         'fp64': torch.float64,
