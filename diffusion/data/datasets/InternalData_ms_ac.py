@@ -133,8 +133,46 @@ class InternalDataMSSigmaAC(InternalDataSigma):
         closest_size, closest_ratio = get_closest_ratio(height, width, self.aspect_ratio)
         return closest_size, closest_ratio
 
+    def get_t5_feature(self, index):
+        # load null embedding with conditional dropout
+        if (self.conditional_dropout > 0 
+            and self.null_embed_path is not None
+            and random.random() < self.conditional_dropout):
+            
+            txt_info = torch.load(self.null_embed_path, map_location='cpu')
+            txt_fea = txt_info['prompt_embeds'][None]
+            attention_mask = txt_info['prompt_attention_mask'][None]
+        else:
+        # load t5 feature
+            npz_path = self.txt_feat_samples[index]
+            txt_info = np.load(npz_path)
+            # add batch dimension to get to shape torch.Size([1, 300, 4096])
+            txt_fea = torch.from_numpy(txt_info['caption_feature'])[None]
+            if 'attention_mask' in txt_info.keys():
+                attention_mask = torch.from_numpy(txt_info['attention_mask'])[None]
+            else:
+                attention_mask = torch.ones(1, 1, self.max_token_length)
+
+        # pad to max token length
+        if txt_fea.shape[1] != self.max_token_length:
+            logger.warn(f'dataloader txt_fea.shape[1] {txt_fea.shape[1]} does not match self.max_token_length: {self.max_token_length}')
+            txt_fea = torch.cat([txt_fea, txt_fea[:, -1:].repeat(1, self.max_token_length-txt_fea.shape[1], 1)], dim=1).to(self.weight_dtype)
+            attention_mask = torch.cat([attention_mask, torch.zeros(1, 1, self.max_token_length-attention_mask.shape[-1])], dim=-1)
+
+        return txt_fea, attention_mask.to(torch.int16)
+                
+    def get_text_feature(self, index):
+        """
+        get t5 text feature and attention mask or text prompt and None
+        """
+        if self.load_t5_feat:
+            return self.get_t5_feature(index)
+        else:
+            item = self.get_item(index)
+            return item['prompt'], None
+
     def getdata(self, index):
-        npz_path = self.txt_feat_samples[index]
+        # npz_path = self.txt_feat_samples[index]
         npy_path = self.vae_feat_samples[index]
         data_info = {}
         ori_h, ori_w = self.get_item_dimensions(index)
@@ -152,29 +190,9 @@ class InternalDataMSSigmaAC(InternalDataSigma):
         data_info['aspect_ratio'] = closest_ratio
         data_info["mask_type"] = self.mask_type
 
-        attention_mask = torch.ones(1, 1, self.max_token_length)
-        
-        if (self.conditional_dropout > 0 
-            and self.null_embed_path is not None
-            and random.random() < self.conditional_dropout):
-            # load null embedding
-            txt_info = torch.load(self.null_embed_path, map_location='cpu')
-            txt_fea = txt_info['prompt_embeds'][None]
-            attention_mask = txt_info['prompt_attention_mask'][None]
-        else:
-            txt_info = np.load(npz_path)
-            # add batch dimension to get to shape torch.Size([1, 300, 4096])
-            txt_fea = torch.from_numpy(txt_info['caption_feature'])[None]
-            if 'attention_mask' in txt_info.keys():
-                attention_mask = torch.from_numpy(txt_info['attention_mask'])[None]
+        txt_fea, attention_mask = self.get_text_feature(index)
 
-        # pad to max_token_length
-        if txt_fea.shape[1] != self.max_token_length:
-            logger.warn(f'dataloader txt_fea.shape[1] {txt_fea.shape[1]} does not match self.max_token_length: {self.max_token_length}')
-            txt_fea = torch.cat([txt_fea, txt_fea[:, -1:].repeat(1, self.max_token_length-txt_fea.shape[1], 1)], dim=1).to(self.weight_dtype)
-            attention_mask = torch.cat([attention_mask, torch.zeros(1, 1, self.max_token_length-attention_mask.shape[-1])], dim=-1)
-
-        return img, txt_fea, attention_mask.to(torch.int16), data_info
+        return img, txt_fea, attention_mask, data_info
 
     def __len__(self):
         return len(self.meta_data_clean)

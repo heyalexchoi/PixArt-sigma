@@ -83,67 +83,47 @@ from diffusers import (
 from tqdm.auto import tqdm
 from transformers import CLIPTextModel, CLIPTokenizer
 from diffusers.utils.import_utils import is_xformers_available
+from diffusers.optimization import get_scheduler
 from packaging import version
 from torch.utils.data import Dataset
 
 
-class TextualInversionDataset(Dataset):
+class TextualInversionDataset(InternalDataMSSigmaAC):
     def __init__(
         self,
-        data_root,
-        tokenizer,
-        # learnable_property="object",  # [object, style]
-        size=512,
-        repeats=100,
-        # interpolation="bicubic",
-        # flip_p=0.5,
-        set="train",
-        placeholder_token="*",
-        center_crop=False,
+        tokenizer, 
+        *args,
+        **kwargs,
     ):
-        self.data_root = data_root
         self.tokenizer = tokenizer
-        # self.learnable_property = learnable_property
-        self.size = size
-        self.placeholder_token = placeholder_token
-        self.center_crop = center_crop
-        # self.flip_p = flip_p
 
-        self.image_paths = [os.path.join(self.data_root, file_path) for file_path in os.listdir(self.data_root)]
+    def __getitem__(self, index):
+        img, text, _, data_info = super().__getitem__(index)
 
-        self.num_images = len(self.image_paths)
-        self._length = self.num_images
+        # example = {
+        #     'text': text,
+        # }
 
-        if set == "train":
-            self._length = self.num_images * repeats
+        # example["input_ids"] = self.tokenizer(
+        #     text,
+        #     padding="max_length",
+        #     truncation=True,
+        #     max_length=self.max_token_length,
+        #     return_tensors="pt",
+        # ).input_ids[0]
 
-       
-    def __len__(self):
-        return self._length
-
-    def __getitem__(self, i):
-        example = {}
-
-        placeholder_string = self.placeholder_token
-
-        # load the text 'prompt' from the item
-        # the prompt needs to have the placeholder token in it!!!
-
-        # maybe log warning if its not there
-
-        # text = random.choice(self.templates).format(placeholder_string)
-
-        example["input_ids"] = self.tokenizer(
+        tokenized_text = self.tokenizer(
             text,
             padding="max_length",
             truncation=True,
-            max_length=self.tokenizer.model_max_length,
+            max_length=self.max_token_length,
             return_tensors="pt",
-        ).input_ids[0]
+        )
 
-        # load the vae encoding and add to example
+        input_ids = tokenized_text.input_ids
+        attention_mask = tokenized_text.attention_mask
 
-        return example
+        return img, input_ids, attention_mask, data_info
 
 
 @torch.inference_mode()
@@ -269,7 +249,8 @@ def train():
                 z = batch[0]
                 clean_images = z * config.scale_factor
 
-                y = batch[1]
+                input_ids = batch[1]
+                y = text_encoder(input_ids)[0].to(dtype=torch_dtype)
                 y_mask = batch[2]
 
                 data_info = batch[3]
@@ -697,15 +678,16 @@ if __name__ == '__main__':
 
     pipeline_name = 'PixArt-alpha/pixart_sigma_sdxlvae_T5_diffusers'
     
-    tokenizer = CLIPTokenizer.from_pretrained(pipeline_name, subfolder="tokenizer")
-
+    tokenizer = T5Tokenizer.from_pretrained(pipeline_name, subfolder="tokenizer")
+    
     # Load scheduler and models
     noise_scheduler = DDPMScheduler.from_pretrained(pipeline_name, subfolder="scheduler")
-    text_encoder = CLIPTextModel.from_pretrained(
-        pipeline_name, subfolder="text_encoder", revision=args.revision
-    )
+    text_encoder = T5EncoderModel.from_pretrained(
+        pipeline_name, subfolder="text_encoder", 
+        torch_dtype=torch_dtype).to(accelerator.device)
+    
     vae = AutoencoderKL.from_pretrained(
-        pipeline_name, subfolder="vae", revision=args.revision, variant=args.variant
+        pipeline_name, subfolder="vae",
     )
 
     # convert model to diffusers
@@ -797,6 +779,14 @@ if __name__ == '__main__':
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
         eps=args.adam_epsilon,
+    )
+
+    lr_scheduler = get_scheduler(
+        args.lr_scheduler,
+        optimizer=optimizer,
+        num_warmup_steps=args.lr_warmup_steps * accelerator.num_processes,
+        num_training_steps=args.max_train_steps * accelerator.num_processes,
+        num_cycles=args.lr_num_cycles,
     )
 
     # Prepare everything
