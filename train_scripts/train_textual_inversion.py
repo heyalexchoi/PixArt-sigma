@@ -86,7 +86,9 @@ from diffusers.utils.import_utils import is_xformers_available
 from diffusers.optimization import get_scheduler
 from packaging import version
 from torch.utils.data import Dataset
+import safetensors
 
+from torch.utils.data import DataLoader
 
 class TextualInversionDataset(InternalDataMSSigmaAC):
     def __init__(
@@ -202,7 +204,11 @@ def log_validation_loss(model, global_step):
 
 
 def train():
-    global model
+    # global model
+
+    # keep original embeddings as reference
+    orig_embeds_params = accelerator.unwrap_model(text_encoder).get_input_embeddings().weight.data.clone()
+
     if config.get('debug_nan', False):
         DebugUnderflowOverflow(model)
         logger.info('NaN debugger registered. Start to detect overflow during training.')
@@ -211,11 +217,20 @@ def train():
 
     global_step = start_step + 1
 
+    progress_bar = tqdm(
+        range(0, args.max_train_steps),
+        initial=global_step,
+        desc="Steps",
+        # Only show the progress bar once on each machine.
+        disable=not accelerator.is_local_main_process,
+    )
+
     pipeline = None
     if config.eval.at_start or config.cmmd.at_start:
-        model = prepare_for_inference(model)
+        text_encoder = prepare_for_inference(text_encoder)
         pipeline = _get_image_gen_pipeline(
             model=model,
+            text_encoder=text_encoder,
             )
 
         if config.eval.at_start:
@@ -224,7 +239,7 @@ def train():
         if config.cmmd.at_start:
             log_cmmd(pipeline=pipeline, global_step=global_step)
     
-        model = prepare_for_training(model)
+        text_encoder = prepare_for_training(text_encoder)
         del pipeline
         flush()
         logger.debug('finished w image gen pipeline')
@@ -249,7 +264,9 @@ def train():
                 z = batch[0]
                 clean_images = z * config.scale_factor
 
+                # get tokenized text / input_ids
                 input_ids = batch[1]
+                # encode input_ids w/ text_encoder
                 y = text_encoder(input_ids)[0].to(dtype=torch_dtype)
                 y_mask = batch[2]
 
@@ -276,6 +293,15 @@ def train():
                         grad_norm = accelerator.clip_grad_norm_(model.parameters(), config.gradient_clip)
                     optimizer.step()
                     lr_scheduler.step()
+
+                # Let's make sure we don't update any embedding weights besides the newly added token
+                index_no_updates = torch.ones((len(tokenizer),), dtype=torch.bool)
+                index_no_updates[min(placeholder_token_ids) : max(placeholder_token_ids) + 1] = False
+
+                with torch.no_grad():
+                    accelerator.unwrap_model(text_encoder).get_input_embeddings().weight[
+                        index_no_updates
+                    ] = orig_embeds_params[index_no_updates]
 
                 gathered_losses = accelerator.gather(loss_term['loss']).detach().cpu().numpy()
                 lr = lr_scheduler.get_last_lr()[0]
@@ -317,6 +343,7 @@ def train():
                     data_time_all = 0
                     
                 global_step += 1
+                progress_bar.update(1)
                 data_time_start = time.time()
 
                 # STEP END actions: save, log val loss, eval images, cmmd
@@ -406,6 +433,27 @@ def save_state(global_step, epoch, model, optimizer, lr_scheduler):
                         lr_scheduler=lr_scheduler
                         )
 
+def save_progress(text_encoder, placeholder_token_ids, accelerator, args, global_step, safe_serialization=True):
+    logger.info("Saving embeddings")
+    save_path = os.path.join(config.work_dir,
+                             'checkpoints',
+                             f"embeddings_{global_step}.safetensors")
+    save_dir = os.path.dirname(save_path)
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir, exist_ok=True)
+    learned_embeds = (
+        accelerator.unwrap_model(text_encoder)
+        .get_input_embeddings()
+        .weight[min(placeholder_token_ids) : max(placeholder_token_ids) + 1]
+    )
+    learned_embeds_dict = {args.placeholder_token: learned_embeds.detach().cpu()}
+
+    if safe_serialization:
+        safetensors.torch.save_file(learned_embeds_dict, save_path, metadata={"format": "pt"})
+    else:
+        torch.save(learned_embeds_dict, save_path)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Process some integers.")
     parser.add_argument("config", type=str, help="config")
@@ -440,6 +488,46 @@ def parse_args():
         ),
     )
     parser.add_argument("--loss_report_name", type=str, default="loss")
+    parser.add_argument("--placeholder_token", type=str,)
+    parser.add_argument("--initializer_token", type=str,)
+    parser.add_argument("--num_vectors", type=int, default=1)
+    parser.add_argument("--adam_beta1", type=float, default=0.9, help="The beta1 parameter for the Adam optimizer.")
+    parser.add_argument("--adam_beta2", type=float, default=0.999, help="The beta2 parameter for the Adam optimizer.")
+    parser.add_argument("--adam_weight_decay", type=float, default=1e-2, help="Weight decay to use.")
+    parser.add_argument("--adam_epsilon", type=float, default=1e-08, help="Epsilon value for the Adam optimizer")
+    parser.add_argument(
+        "--enable_xformers_memory_efficient_attention", action="store_true", help="Whether or not to use xformers."
+    )
+    parser.add_argument(
+        "--lr_scheduler",
+        type=str,
+        default="constant",
+        help=(
+            'The scheduler type to use. Choose between ["linear", "cosine", "cosine_with_restarts", "polynomial",'
+            ' "constant", "constant_with_warmup"]'
+        ),
+    )
+    parser.add_argument(
+        "--lr_warmup_steps", type=int, default=500, help="Number of steps for the warmup in the lr scheduler."
+    )
+    parser.add_argument(
+        "--lr_num_cycles",
+        type=int,
+        default=1,
+        help="Number of hard resets of the lr in cosine_with_restarts scheduler.",
+    )
+    parser.add_argument(
+        "--learning_rate",
+        type=float,
+        default=1e-4,
+        help="Initial learning rate (after the potential warmup period) to use.",
+    )
+    parser.add_argument(
+        "--scale_lr",
+        action="store_true",
+        default=False,
+        help="Scale the learning rate by the number of GPUs, gradient accumulation steps, and batch size.",
+    )
     args = parser.parse_args()
     return args
 
@@ -570,41 +658,33 @@ if __name__ == '__main__':
 
     train_data = config.train_data
     val_data = config.val_data
-
-    # build dataloader
-    # set_data_root(config.data_root)
-
-    # can i subclass my current dataset
-    # and override get item to do super get item
-    # and then substitute the newly encoded prompt for the pre encoded
     
     train_datasets = [
-        build_dataset(
-            data_dict, resolution=image_size, aspect_ratio_type=config.aspect_ratio_type,
+        TextualInversionDataset(
+            tokenizer=tokenizer,
+            resolution=image_size, aspect_ratio_type=config.aspect_ratio_type,
             null_embed_path=get_path_for_encoded_prompt('', max_length),
-            max_length=max_length, config=config,
+            max_length=max_length
+            **data_dict,
         ) for data_dict in train_data
     ]
-    train_dataloaders = []
-
-    dataloader = DataLoader(dataset, batch_sampler=kwargs['batch_sampler'], num_workers=num_workers, pin_memory=True)
-    
+    train_dataloaders = []    
     
     val_datasets = None
     val_dataloaders = None
 
     if config.val_data:
         val_datasets = [
-            build_dataset(
-                data_dict, resolution=image_size, aspect_ratio_type=config.aspect_ratio_type,
-                max_length=max_length, config=config,
+            TextualInversionDataset(
+                tokenizer=tokenizer,
+                resolution=image_size, aspect_ratio_type=config.aspect_ratio_type,
+                null_embed_path=get_path_for_encoded_prompt('', max_length),
+                max_length=max_length
+                **data_dict,
             ) for data_dict in val_data
         ]
         val_dataloaders = []
-        val_dataset = build_dataset(
-            val_data, resolution=image_size, aspect_ratio_type=config.aspect_ratio_type,
-            max_length=max_length, config=config,
-        )
+
     if config.multi_scale:
         
         for dataset in train_datasets:
