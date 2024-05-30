@@ -32,6 +32,7 @@ def get_image_gen_pipeline(
         torch_dtype,
         device,
         transformer,
+        text_encoder=None,
     ):
     """Get pipeline with image generation components, without text encoding. Optionally load a passed in transformer"""
     logger.info(f"Loading image gen pipeline {pipeline_load_from} to device: {device} and dtype {torch_dtype}...")
@@ -39,7 +40,7 @@ def get_image_gen_pipeline(
         pipeline_load_from,
         transformer=transformer,
         tokenizer=None,
-        text_encoder=None,
+        text_encoder=text_encoder,
         torch_dtype=torch_dtype,
         use_safetensors=True,
     ).to(device)

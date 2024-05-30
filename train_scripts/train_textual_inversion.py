@@ -129,12 +129,12 @@ class TextualInversionDataset(InternalDataMSSigmaAC):
 
 
 @torch.inference_mode()
-def log_validation_loss(model, global_step):
+def log_validation_loss(global_step):
     if not val_dataloaders or len(val_dataloaders) == 0:
         logger.warning("No validation data provided. Skipping validation.")
         return
     
-    model.eval()
+    text_encoder.eval()
     logs = {}
     all_validation_losses = []
     step_bucket_losses = {} # key: bucket name, value: list of each batch's mean losses for that bucket. 
@@ -150,7 +150,10 @@ def log_validation_loss(model, global_step):
             z = batch[0]
             latents = (z * config.scale_factor)
 
-            y = batch[1]
+            # get tokenized text / input_ids
+            input_ids = batch[1]
+            # encode input_ids w/ text_encoder
+            y = text_encoder(input_ids)[0].to(dtype=torch_dtype)
             y_mask = batch[2]
             
             data_info = batch[3]
@@ -162,7 +165,7 @@ def log_validation_loss(model, global_step):
             # Predict the noise residual and compute the validation loss
             with torch.no_grad():
                 loss_term = train_diffusion.training_losses(
-                    model, latents, timesteps, 
+                    diffuser, latents, timesteps, 
                     model_kwargs=dict(y=y, mask=y_mask, data_info=data_info)
                     )
                 gathered_losses = accelerator.gather(loss_term['loss']).cpu().numpy()
@@ -200,7 +203,7 @@ def log_validation_loss(model, global_step):
     logger.info(info)
     accelerator.log(logs, step=global_step)
 
-    model.train()
+    text_encoder.train()
 
 
 def train():
@@ -210,7 +213,7 @@ def train():
     orig_embeds_params = accelerator.unwrap_model(text_encoder).get_input_embeddings().weight.data.clone()
 
     if config.get('debug_nan', False):
-        DebugUnderflowOverflow(model)
+        DebugUnderflowOverflow(text_encoder)
         logger.info('NaN debugger registered. Start to detect overflow during training.')
     time_start, last_tic = time.time(), time.time()
     log_buffer = LogBuffer()
@@ -229,22 +232,32 @@ def train():
     if config.eval.at_start or config.cmmd.at_start:
         text_encoder = prepare_for_inference(text_encoder)
         pipeline = _get_image_gen_pipeline(
-            model=model,
+            diffuser=diffuser,
             text_encoder=text_encoder,
             )
 
         if config.eval.at_start:
-            log_eval_images(pipeline=pipeline, global_step=global_step)
+            log_eval_images(
+                accelerator=accelerator,
+                config=config,
+                pipeline=pipeline, 
+                global_step=global_step
+                )
 
         if config.cmmd.at_start:
-            log_cmmd(pipeline=pipeline, global_step=global_step)
+            log_cmmd(
+                pipeline=pipeline, 
+                accelerator=accelerator,
+                config=config,
+                global_step=global_step,
+                )
     
         text_encoder = prepare_for_training(text_encoder)
         del pipeline
         flush()
         logger.debug('finished w image gen pipeline')
 
-    # Now you train the model
+    # train loop
     for epoch in range(start_epoch + 1, config.num_epochs + 1):
         logger.debug('start epoch')
         data_time_start= time.time()
@@ -278,19 +291,19 @@ def train():
 
                 grad_norm = None
                 data_time_all += time.time() - data_time_start
-                with accelerator.accumulate(model):
+                with accelerator.accumulate(text_encoder):
                     # Predict the noise residual
                     logger.debug('accumulating')
                     optimizer.zero_grad()
                     loss_term = train_diffusion.training_losses(
-                        model, clean_images, timesteps, 
+                        diffuser, clean_images, timesteps, 
                         model_kwargs=dict(y=y, mask=y_mask, data_info=data_info)
                         )
                     loss = loss_term['loss'].mean()
                     logger.debug('accumulating backward')
                     accelerator.backward(loss)
                     if accelerator.sync_gradients:
-                        grad_norm = accelerator.clip_grad_norm_(model.parameters(), config.gradient_clip)
+                        grad_norm = accelerator.clip_grad_norm_(text_encoder.parameters(), config.gradient_clip)
                     optimizer.step()
                     lr_scheduler.step()
 
@@ -348,12 +361,12 @@ def train():
 
                 # STEP END actions: save, log val loss, eval images, cmmd
                 if config.save_model_steps and global_step % config.save_model_steps == 0:
-                    save_state(
+                    save_progress(
                         global_step=global_step,
-                        epoch=epoch,
-                        model=model,
-                        optimizer=optimizer,
-                        lr_scheduler=lr_scheduler,
+                        text_encoder=text_encoder,
+                        placeholder_token_ids=placeholder_token_ids,
+                        accelerator=accelerator,
+                        args=args,
                     )
                 if config.log_val_loss_steps and global_step % config.log_val_loss_steps == 0:
                     log_validation_loss(model=model, global_step=global_step)
@@ -367,10 +380,20 @@ def train():
                         model=model,
                         )
                     if should_log_eval:
-                        log_eval_images(pipeline=pipeline, global_step=global_step)
+                        log_eval_images(
+                            accelerator=accelerator,
+                            config=config,
+                            pipeline=pipeline, 
+                            global_step=global_step
+                            )
                     
                     if should_log_cmmd:
-                        log_cmmd(pipeline=pipeline, global_step=global_step)
+                        log_cmmd(
+                            pipeline=pipeline, 
+                            accelerator=accelerator,
+                            config=config,
+                            global_step=global_step,
+                            )
                     
                     model = prepare_for_training(model)
                     del pipeline
@@ -378,13 +401,13 @@ def train():
 
         # EPOCH END actions: save, log val loss, eval images, cmmd
         if (config.save_model_epochs and epoch % config.save_model_epochs == 0) or epoch == config.num_epochs:
-            save_state(
-                global_step=global_step,
-                epoch=epoch,
-                model=model,
-                optimizer=optimizer,
-                lr_scheduler=lr_scheduler,
-            )
+            save_progress(
+                        global_step=global_step,
+                        text_encoder=text_encoder,
+                        placeholder_token_ids=placeholder_token_ids,
+                        accelerator=accelerator,
+                        args=args,
+                    )
         if (config.log_val_loss_epochs and epoch % config.log_val_loss_epochs == 0) or epoch == config.num_epochs:
             log_validation_loss(model=model, global_step=global_step)
         
@@ -408,51 +431,41 @@ def train():
             del pipeline
             flush()
 
-def _get_image_gen_pipeline(model):
-    diffusers_transformer = convert_net_to_diffusers(
-        state_dict=model.state_dict(),
-        image_size=image_size,
-    )
-    diffusers_transformer = diffusers_transformer.to(torch_dtype)
+def _get_image_gen_pipeline(diffuser, text_encoder):
+    # diffusers_transformer = convert_net_to_diffusers(
+    #     state_dict=model.state_dict(),
+    #     image_size=image_size,
+    # )
+    # diffusers_transformer = diffusers_transformer.to(torch_dtype)
     return get_image_gen_pipeline(
                 pipeline_load_from=config.pipeline_load_from,
                 torch_dtype=torch_dtype,
                 device=accelerator.device,
-                transformer=diffusers_transformer,
+                transformer=diffuser,
+                text_encoder=text_encoder,
                 )
-
-def save_state(global_step, epoch, model, optimizer, lr_scheduler):
-    wait_for_everyone()
-    if accelerator.is_main_process:
-        os.umask(0o000)
-        save_checkpoint(os.path.join(config.work_dir, 'checkpoints'),
-                        epoch=epoch,
-                        step=global_step,
-                        model=accelerator.unwrap_model(model),
-                        optimizer=optimizer,
-                        lr_scheduler=lr_scheduler
-                        )
 
 def save_progress(text_encoder, placeholder_token_ids, accelerator, args, global_step, safe_serialization=True):
     logger.info("Saving embeddings")
-    save_path = os.path.join(config.work_dir,
-                             'checkpoints',
-                             f"embeddings_{global_step}.safetensors")
-    save_dir = os.path.dirname(save_path)
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir, exist_ok=True)
-    learned_embeds = (
-        accelerator.unwrap_model(text_encoder)
-        .get_input_embeddings()
-        .weight[min(placeholder_token_ids) : max(placeholder_token_ids) + 1]
-    )
-    learned_embeds_dict = {args.placeholder_token: learned_embeds.detach().cpu()}
+    wait_for_everyone()
+    if accelerator.is_main_process:
+        save_path = os.path.join(config.work_dir,
+                                'checkpoints',
+                                f"text_embeddings_{global_step}.safetensors")
+        save_dir = os.path.dirname(save_path)
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir, exist_ok=True)
+        learned_embeds = (
+            accelerator.unwrap_model(text_encoder)
+            .get_input_embeddings()
+            .weight[min(placeholder_token_ids) : max(placeholder_token_ids) + 1]
+        )
+        learned_embeds_dict = {args.placeholder_token: learned_embeds.detach().cpu()}
 
-    if safe_serialization:
-        safetensors.torch.save_file(learned_embeds_dict, save_path, metadata={"format": "pt"})
-    else:
-        torch.save(learned_embeds_dict, save_path)
-
+        if safe_serialization:
+            safetensors.torch.save_file(learned_embeds_dict, save_path, metadata={"format": "pt"})
+        else:
+            torch.save(learned_embeds_dict, save_path)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Process some integers.")
