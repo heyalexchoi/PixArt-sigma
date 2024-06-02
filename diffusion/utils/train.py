@@ -203,35 +203,54 @@ def log_eval_images(
     negative_prompt_embeds_list = []
     negative_prompt_attention_mask_list = []
 
+    # kwarg placeholders:
+    # assign embeds kwargs if not should_encode_prompts
+    prompt_embeds = None
+    prompt_attention_mask = None
+    negative_prompt_embeds = None
+    negative_prompt_attention_mask = None
+    # assign prompts kwargs if should_encode_prompts
+    prompts = None
+    negative_prompt = None
+
     image_logs = []
     images = []
-    for prompt in eval_sample_prompts:
-        prompt_embed_dict = torch.load(
-                get_path_for_encoded_prompt(prompt, max_token_length),
-                map_location='cpu'
-                )
-        prompt_embeds_list.append(prompt_embed_dict['prompt_embeds'])
-        prompt_attention_mask_list.append(prompt_embed_dict['prompt_attention_mask'])
 
-    if eval_negative_prompt:
-        negative_prompt_embed_dict = torch.load(
-                get_path_for_encoded_prompt(eval_negative_prompt, max_token_length),
-                map_location='cpu'
-                )
-        negative_prompt_embeds_list = [negative_prompt_embed_dict['prompt_embeds']] * len(eval_sample_prompts)
-        negative_prompt_attention_mask_list = [negative_prompt_embed_dict['prompt_attention_mask']] * len(eval_sample_prompts)
+    should_encode_prompts = config.eval.get('should_encode_prompts', False)
+
+    if not should_encode_prompts:
+        for prompt in eval_sample_prompts:
+            prompt_embed_dict = torch.load(
+                    get_path_for_encoded_prompt(prompt, max_token_length),
+                    map_location='cpu'
+                    )
+            prompt_embeds_list.append(prompt_embed_dict['prompt_embeds'])
+            prompt_attention_mask_list.append(prompt_embed_dict['prompt_attention_mask'])
+
+        if eval_negative_prompt:
+            negative_prompt_embed_dict = torch.load(
+                    get_path_for_encoded_prompt(eval_negative_prompt, max_token_length),
+                    map_location='cpu'
+                    )
+            negative_prompt_embeds_list = [negative_prompt_embed_dict['prompt_embeds']] * len(eval_sample_prompts)
+            negative_prompt_attention_mask_list = [negative_prompt_embed_dict['prompt_attention_mask']] * len(eval_sample_prompts)
     
-    prompt_embeds = torch.stack(prompt_embeds_list)
-    prompt_attention_mask = torch.stack(prompt_attention_mask_list)
+        prompt_embeds = torch.stack(prompt_embeds_list)
+        prompt_attention_mask = torch.stack(prompt_attention_mask_list)
 
-    negative_prompt_embeds = torch.stack(negative_prompt_embeds_list) if negative_prompt_embeds_list else None
-    negative_prompt_attention_mask = torch.stack(negative_prompt_attention_mask_list) if negative_prompt_attention_mask_list else None
+        negative_prompt_embeds = torch.stack(negative_prompt_embeds_list) if negative_prompt_embeds_list else None
+        negative_prompt_attention_mask = torch.stack(negative_prompt_attention_mask_list) if negative_prompt_attention_mask_list else None
+    else:
+        prompts = eval_sample_prompts
+        negative_prompt = eval_negative_prompt
 
     images = generate_images(
         pipeline=pipeline,
         accelerator=accelerator,
+        prompts=prompts,
         prompt_embeds=prompt_embeds,
         prompt_attention_mask=prompt_attention_mask,
+        negative_prompt=negative_prompt,
         negative_prompt_embeds=negative_prompt_embeds,
         negative_prompt_attention_mask=negative_prompt_attention_mask,
         batch_size=batch_size,

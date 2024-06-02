@@ -7,8 +7,9 @@ from diffusion.utils.dist_utils import flush
 
 logger = get_logger(__name__)
 
-class PromptDataset(Dataset):
-    def __init__(self, prompt_embeds, prompt_attention_mask, negative_prompt_embeds=None, negative_prompt_attention_mask=None):
+class PromptEmbedDataset(Dataset):
+    def __init__(self, negative_prompt, prompt_embeds, prompt_attention_mask, negative_prompt_embeds=None, negative_prompt_attention_mask=None):
+        self.negative_prompt = negative_prompt
         self.prompt_embeds = prompt_embeds
         self.prompt_attention_mask = prompt_attention_mask
         self.negative_prompt_embeds = negative_prompt_embeds
@@ -18,6 +19,7 @@ class PromptDataset(Dataset):
         return len(self.prompt_embeds)
 
     def __getitem__(self, idx):
+        
         item = {
             'prompt_embeds': self.prompt_embeds[idx],
             'prompt_attention_mask': self.prompt_attention_mask[idx]
@@ -26,6 +28,20 @@ class PromptDataset(Dataset):
             item['negative_prompt_embeds'] = self.negative_prompt_embeds[idx]
             item['negative_prompt_attention_mask'] = self.negative_prompt_attention_mask[idx]
         return item
+    
+
+class PromptDataset(Dataset):
+    def __init__(self, prompts, ):
+        self.prompts = prompts
+    
+    def __len__(self):
+        return len(self.prompts)
+
+    def __getitem__(self, idx):
+        item = {
+                'prompt': self.prompts[idx],
+                }
+        return item
 
 def get_image_gen_pipeline(
         pipeline_load_from,
@@ -33,13 +49,14 @@ def get_image_gen_pipeline(
         device,
         transformer,
         text_encoder=None,
+        tokenizer=None,
     ):
     """Get pipeline with image generation components, without text encoding. Optionally load a passed in transformer"""
     logger.info(f"Loading image gen pipeline {pipeline_load_from} to device: {device} and dtype {torch_dtype}...")
     pipe = PixArtSigmaPipeline.from_pretrained(
         pipeline_load_from,
         transformer=transformer,
-        tokenizer=None,
+        tokenizer=tokenizer,
         text_encoder=text_encoder,
         torch_dtype=torch_dtype,
         use_safetensors=True,
@@ -51,6 +68,7 @@ def get_image_gen_pipeline(
 def generate_images(
         pipeline,
         accelerator,
+        prompts,
         prompt_embeds,
         prompt_attention_mask,
         batch_size,
@@ -59,6 +77,7 @@ def generate_images(
         height,
         device,
         max_token_length,
+        negative_prompt=None,
         negative_prompt_embeds=None,
         negative_prompt_attention_mask=None,
         seed=0,
@@ -69,7 +88,8 @@ def generate_images(
     batch generates images from caption embeddings with batch dim
     assumes null embeddings have already been generated and saved
     """
-    logger.info(f"Generating {len(prompt_embeds)} images...")    
+    length = len(prompts) if prompts is not None else len(prompt_embeds)
+    logger.info(f"Generating {length} images...")    
     logger.info(f"width {width} height {height}")    
     generator = torch.Generator(device=device).manual_seed(seed)
     images = []
@@ -80,12 +100,19 @@ def generate_images(
         )
     null_embed = torch.load(null_embed_path)
 
-    dataset = PromptDataset(
-        prompt_embeds=prompt_embeds,
-        prompt_attention_mask=prompt_attention_mask,
-        negative_prompt_embeds=negative_prompt_embeds,
-        negative_prompt_attention_mask=negative_prompt_attention_mask,
-    )
+    should_encode_prompts = prompts is not None and prompt_embeds is None
+
+    if not should_encode_prompts:
+        dataset = PromptEmbedDataset(
+            prompt_embeds=prompt_embeds,
+            prompt_attention_mask=prompt_attention_mask,
+            negative_prompt_embeds=negative_prompt_embeds,
+            negative_prompt_attention_mask=negative_prompt_attention_mask,
+        )
+    else:
+        dataset = PromptDataset(
+            prompts=prompts,
+        )
 
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     dataloader = accelerator.prepare(dataloader)
@@ -95,20 +122,28 @@ def generate_images(
     for index, batch in enumerate(dataloader):
         logger.info(f"Generating images for batch {index}/{len(dataloader)}")
         # batch_prompt_embeds = prompt_embeds[i:i+batch_size].to(device)
-        batch_prompt_embeds = batch['prompt_embeds'].to(device)
-        # batch_prompt_attention_mask = prompt_attention_mask[i:i+batch_size].to(device)
-        batch_prompt_attention_mask = batch['prompt_attention_mask'].to(device)
-        # duplicate null embeds to match batch size
-        actual_batch_size = batch_prompt_embeds.size(0)  # Get the actual batch size from batch_prompt_embeds
-        batch_negative_prompt_embeds = null_embed['prompt_embeds'].repeat(actual_batch_size, 1, 1)
-        batch_negative_prompt_attention_mask = null_embed['prompt_attention_mask'].repeat(actual_batch_size, 1)
-        # if negative_prompt_embeds is not None and negative_prompt_attention_mask is not None:
-        if 'negative_prompt_embeds' in batch and 'negative_prompt_attention_mask' in batch:
-            # batch_negative_prompt_embeds = negative_prompt_embeds[i:i+batch_size].to(device)
-            # batch_negative_prompt_attention_mask = negative_prompt_attention_mask[i:i+batch_size].to(device)
-            batch_negative_prompt_embeds = batch['negative_prompt_embeds'].to(device)
-            batch_negative_prompt_attention_mask = batch['negative_prompt_attention_mask'].to(device)
-            logger.info('using negative prompt embeds')
+        if not should_encode_prompts:
+            batch_prompt_embeds = batch['prompt_embeds'].to(device)
+            # batch_prompt_attention_mask = prompt_attention_mask[i:i+batch_size].to(device)
+            batch_prompt_attention_mask = batch['prompt_attention_mask'].to(device)
+            # duplicate null embeds to match batch size
+            actual_batch_size = batch_prompt_embeds.size(0)  # Get the actual batch size from batch_prompt_embeds
+            batch_negative_prompt_embeds = null_embed['prompt_embeds'].repeat(actual_batch_size, 1, 1)
+            batch_negative_prompt_attention_mask = null_embed['prompt_attention_mask'].repeat(actual_batch_size, 1)
+            # if negative_prompt_embeds is not None and negative_prompt_attention_mask is not None:
+            if 'negative_prompt_embeds' in batch and 'negative_prompt_attention_mask' in batch:
+                # batch_negative_prompt_embeds = negative_prompt_embeds[i:i+batch_size].to(device)
+                # batch_negative_prompt_attention_mask = negative_prompt_attention_mask[i:i+batch_size].to(device)
+                batch_negative_prompt_embeds = batch['negative_prompt_embeds'].to(device)
+                batch_negative_prompt_attention_mask = batch['negative_prompt_attention_mask'].to(device)
+                logger.info('using negative prompt embeds')
+        else:
+            prompts = batch['prompt']
+
+            batch_prompt_embeds = None
+            batch_prompt_attention_mask = None
+            batch_negative_prompt_embeds = None
+            batch_negative_prompt_attention_mask = None
 
         batch_images = pipeline(
             width=width,
@@ -121,7 +156,8 @@ def generate_images(
             prompt_attention_mask=batch_prompt_attention_mask,
             negative_prompt_embeds=batch_negative_prompt_embeds,
             negative_prompt_attention_mask=batch_negative_prompt_attention_mask,
-            negative_prompt=None, # this has to be explicitly set to None if using negative prompt embeds
+            prompt=prompts,
+            negative_prompt=negative_prompt, # this has to be explicitly set to None if using negative prompt embeds
             output_type=output_type,
         ).images
 

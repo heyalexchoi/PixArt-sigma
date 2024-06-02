@@ -131,7 +131,12 @@ class TextualInversionDataset(InternalDataMSSigmaAC):
 
 
 @torch.inference_mode()
-def log_validation_loss(global_step):
+def log_validation_loss(
+    text_encoder,
+    diffuser,
+    global_step,
+    val_dataloaders,
+    ):
     if not val_dataloaders or len(val_dataloaders) == 0:
         logger.warning("No validation data provided. Skipping validation.")
         return
@@ -208,8 +213,16 @@ def log_validation_loss(global_step):
     text_encoder.train()
 
 
-def train():
-    # global model
+def train(
+        accelerator,
+        text_encoder,
+        tokenizer,
+        diffuser,
+        train_dataloaders,
+        val_dataloaders,
+        optimizer,
+        lr_scheduler,
+        ):
 
     # keep original embeddings as reference
     orig_embeds_params = accelerator.unwrap_model(text_encoder).get_input_embeddings().weight.data.clone()
@@ -223,7 +236,7 @@ def train():
     global_step = start_step + 1
 
     progress_bar = tqdm(
-        range(0, args.max_train_steps),
+        range(0, max_train_steps),
         initial=global_step,
         desc="Steps",
         # Only show the progress bar once on each machine.
@@ -232,10 +245,14 @@ def train():
 
     pipeline = None
     if config.eval.at_start or config.cmmd.at_start:
-        text_encoder = prepare_for_inference(text_encoder)
+        text_encoder = prepare_for_inference(
+            accelerator=accelerator,
+            model=text_encoder,
+            )
         pipeline = _get_image_gen_pipeline(
             diffuser=diffuser,
             text_encoder=text_encoder,
+            tokenizer=tokenizer,
             )
 
         if config.eval.at_start:
@@ -254,7 +271,10 @@ def train():
                 global_step=global_step,
                 )
     
-        text_encoder = prepare_for_training(text_encoder)
+        text_encoder = prepare_for_training(
+            accelerator=accelerator,
+            model=text_encoder,
+            )
         del pipeline
         flush()
         logger.debug('finished w image gen pipeline')
@@ -371,7 +391,12 @@ def train():
                         args=args,
                     )
                 if config.log_val_loss_steps and global_step % config.log_val_loss_steps == 0:
-                    log_validation_loss(model=model, global_step=global_step)
+                    log_validation_loss(
+                        text_encoder=text_encoder,
+                        diffuser=diffuser,
+                        global_step=global_step,
+                        val_dataloaders=val_dataloaders,
+                        )
                 
                 should_log_eval = (config.eval.every_n_steps and global_step % config.eval.every_n_steps == 0)
                 should_log_cmmd = (config.cmmd.every_n_steps and global_step % config.cmmd.every_n_steps == 0)
@@ -379,7 +404,9 @@ def train():
                 if (should_log_eval or should_log_cmmd):
                     model = prepare_for_inference(model)
                     pipeline = _get_image_gen_pipeline(
-                        model=model,
+                        diffuser=diffuser,
+                        text_encoder=text_encoder,
+                        tokenizer=tokenizer,
                         )
                     if should_log_eval:
                         log_eval_images(
@@ -421,7 +448,9 @@ def train():
         if (should_log_eval or should_log_cmmd):
             model = prepare_for_inference(model)
             pipeline = _get_image_gen_pipeline(
-                model=model,
+                diffuser=diffuser,
+                text_encoder=text_encoder,
+                tokenizer=tokenizer,
                 )
             if should_log_eval:
                 log_eval_images(pipeline=pipeline, global_step=global_step)
@@ -433,7 +462,10 @@ def train():
             del pipeline
             flush()
 
-def _get_image_gen_pipeline(diffuser, text_encoder):
+def _get_image_gen_pipeline(
+        diffuser, 
+        text_encoder, 
+        tokenizer):
     # diffusers_transformer = convert_net_to_diffusers(
     #     state_dict=model.state_dict(),
     #     image_size=image_size,
@@ -445,6 +477,7 @@ def _get_image_gen_pipeline(diffuser, text_encoder):
                 device=accelerator.device,
                 transformer=diffuser,
                 text_encoder=text_encoder,
+                tokenizer=tokenizer,
                 )
 
 def save_progress(text_encoder, placeholder_token_ids, accelerator, args, global_step, safe_serialization=True):
@@ -512,12 +545,6 @@ def parse_args():
     parser.add_argument("--adam_epsilon", type=float, default=1e-08, help="Epsilon value for the Adam optimizer")
     parser.add_argument(
         "--enable_xformers_memory_efficient_attention", action="store_true", help="Whether or not to use xformers."
-    )
-    parser.add_argument(
-        "--gradient_accumulation_steps",
-        type=int,
-        default=1,
-        help="Number of updates steps to accumulate before performing a backward/update pass.",
     )
     parser.add_argument(
         "--lr_scheduler",
@@ -888,7 +915,7 @@ if __name__ == '__main__':
 
     if args.scale_lr:
         args.learning_rate = (
-            args.learning_rate * args.gradient_accumulation_steps * args.train_batch_size * accelerator.num_processes
+            args.learning_rate * config.gradient_accumulation_steps * config.train_batch_size * accelerator.num_processes
         )
 
     # Initialize the optimizer
@@ -905,14 +932,13 @@ if __name__ == '__main__':
     )
 
     num_update_steps_per_epoch = math.ceil(steps_per_epoch / config.gradient_accumulation_steps)
-    if args.max_train_steps is None:
-        args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-
+    max_train_steps = config.num_epochs * num_update_steps_per_epoch
+    
     lr_scheduler = get_scheduler(
         args.lr_scheduler,
         optimizer=optimizer,
         num_warmup_steps=args.lr_warmup_steps * accelerator.num_processes,
-        num_training_steps=args.max_train_steps * accelerator.num_processes,
+        num_training_steps=max_train_steps * accelerator.num_processes,
         num_cycles=args.lr_num_cycles,
     )
 
@@ -923,4 +949,14 @@ if __name__ == '__main__':
     optimizer, lr_scheduler = accelerator.prepare(optimizer, lr_scheduler)
     train_dataloaders = [accelerator.prepare(train_dataloader) for train_dataloader in train_dataloaders]
     val_dataloaders = [accelerator.prepare(val_dataloader) for val_dataloader in val_dataloaders] if val_dataloaders else None
-    train()
+    
+    train(
+        accelerator=accelerator,
+        text_encoder=text_encoder,
+        tokenizer=tokenizer,
+        diffuser=diffuser,
+        train_dataloaders=train_dataloaders,
+        val_dataloaders=val_dataloaders,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        )
