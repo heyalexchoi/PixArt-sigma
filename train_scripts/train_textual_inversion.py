@@ -89,6 +89,7 @@ from torch.utils.data import Dataset
 import safetensors
 
 from torch.utils.data import DataLoader
+import math
 
 class TextualInversionDataset(InternalDataMSSigmaAC):
     def __init__(
@@ -450,8 +451,8 @@ def save_progress(text_encoder, placeholder_token_ids, accelerator, args, global
     wait_for_everyone()
     if accelerator.is_main_process:
         save_path = os.path.join(config.work_dir,
-                                'checkpoints',
-                                f"text_embeddings_{global_step}.safetensors")
+                                'textual_inversions',
+                                f"{config.get('ti_subject', '')}_{global_step}.safetensors")
         save_dir = os.path.dirname(save_path)
         if not os.path.exists(save_dir):
             os.makedirs(save_dir, exist_ok=True)
@@ -873,6 +874,10 @@ if __name__ == '__main__':
         weight_decay=args.adam_weight_decay,
         eps=args.adam_epsilon,
     )
+
+    num_update_steps_per_epoch = math.ceil(steps_per_epoch / config.gradient_accumulation_steps)
+    if args.max_train_steps is None:
+        args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
 
     lr_scheduler = get_scheduler(
         args.lr_scheduler,
