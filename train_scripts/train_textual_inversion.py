@@ -98,6 +98,7 @@ class TextualInversionDataset(InternalDataMSSigmaAC):
         *args,
         **kwargs,
     ):
+        super().__init__(*args, **kwargs)
         self.tokenizer = tokenizer
 
     def __getitem__(self, index):
@@ -502,8 +503,8 @@ def parse_args():
         ),
     )
     parser.add_argument("--loss_report_name", type=str, default="loss")
-    parser.add_argument("--placeholder_token", type=str,)
-    parser.add_argument("--initializer_token", type=str,)
+    parser.add_argument("--placeholder_token", type=str, required=True)
+    parser.add_argument("--initializer_token", type=str, required=True)
     parser.add_argument("--num_vectors", type=int, default=1)
     parser.add_argument("--adam_beta1", type=float, default=0.9, help="The beta1 parameter for the Adam optimizer.")
     parser.add_argument("--adam_beta2", type=float, default=0.999, help="The beta2 parameter for the Adam optimizer.")
@@ -511,6 +512,12 @@ def parse_args():
     parser.add_argument("--adam_epsilon", type=float, default=1e-08, help="Epsilon value for the Adam optimizer")
     parser.add_argument(
         "--enable_xformers_memory_efficient_attention", action="store_true", help="Whether or not to use xformers."
+    )
+    parser.add_argument(
+        "--gradient_accumulation_steps",
+        type=int,
+        default=1,
+        help="Number of updates steps to accumulate before performing a backward/update pass.",
     )
     parser.add_argument(
         "--lr_scheduler",
@@ -619,6 +626,8 @@ if __name__ == '__main__':
 
     logger.info(f"vae scale factor: {config.scale_factor}")
 
+    logger.info(f"placeholder_token: {args.placeholder_token} num_vectors: {args.num_vectors}")
+
     # null embed needed for: conditional dropout, eval, cmmd, and for the model class_dropout_prob (via load_checkpoint)
     if (config.eval or config.resume_from) and accelerator.is_main_process:
         # preparing embeddings for visualization. We put it here for saving GPU memory
@@ -675,10 +684,11 @@ if __name__ == '__main__':
     
     train_datasets = [
         TextualInversionDataset(
-            tokenizer=tokenizer,
+            # tokenizer=tokenizer,
+            tokenizer=None, # assign this after tokenizer made
             resolution=image_size, aspect_ratio_type=config.aspect_ratio_type,
             null_embed_path=get_path_for_encoded_prompt('', max_length),
-            max_length=max_length
+            max_length=max_length,
             **data_dict,
         ) for data_dict in train_data
     ]
@@ -690,10 +700,11 @@ if __name__ == '__main__':
     if config.val_data:
         val_datasets = [
             TextualInversionDataset(
-                tokenizer=tokenizer,
+                # tokenizer=tokenizer,
+                tokenizer=None, # assign this after tokenizer made
                 resolution=image_size, aspect_ratio_type=config.aspect_ratio_type,
                 null_embed_path=get_path_for_encoded_prompt('', max_length),
-                max_length=max_length
+                max_length=max_length,
                 **data_dict,
             ) for data_dict in val_data
         ]
@@ -760,7 +771,7 @@ if __name__ == '__main__':
         path = os.path.basename(resume_path)
         start_epoch = int(path.replace('.pth', '').split("_")[1]) - 1
         start_step = int(path.replace('.pth', '').split("_")[3])
-        _, missing, unexpected = load_checkpoint(**config.resume_from,
+        missing, unexpected = load_checkpoint(**config.resume_from,
                                                  model=model,
                                                 #  optimizer=optimizer,
                                                 #  lr_scheduler=lr_scheduler,
@@ -773,6 +784,9 @@ if __name__ == '__main__':
     pipeline_name = 'PixArt-alpha/pixart_sigma_sdxlvae_T5_diffusers'
     
     tokenizer = T5Tokenizer.from_pretrained(pipeline_name, subfolder="tokenizer")
+
+    for dataset in train_datasets + (val_datasets or []):
+        dataset.tokenizer = tokenizer
     
     # Load scheduler and models
     noise_scheduler = DDPMScheduler.from_pretrained(pipeline_name, subfolder="scheduler")
@@ -830,17 +844,28 @@ if __name__ == '__main__':
     # Freeze vae and unet
     vae.requires_grad_(False)
     diffuser.requires_grad_(False)
-    # Freeze all parameters except for the token embeddings in text encoder
-    text_encoder.text_model.encoder.requires_grad_(False)
-    text_encoder.text_model.final_layer_norm.requires_grad_(False)
-    text_encoder.text_model.embeddings.position_embedding.requires_grad_(False)
 
-    if args.gradient_checkpointing:
+    # from original SD example:
+    # Freeze all parameters except for the token embeddings in text encoder
+    # text_encoder.text_model.encoder.requires_grad_(False)
+    # text_encoder.text_model.final_layer_norm.requires_grad_(False)
+    # text_encoder.text_model.embeddings.position_embedding.requires_grad_(False)
+
+    # From GPT adaptation:
+    # freeze everything
+    for name, param in text_encoder.named_parameters():
+        param.requires_grad = False
+    
+    # unfreeze target / placeholder token embeddings
+    for token_id in placeholder_token_ids:
+        text_encoder.shared.weight[token_id].requires_grad = True
+
+    # if args.gradient_checkpointing:
         # Keep unet in train mode if we are using gradient checkpointing to save memory.
         # The dropout cannot be != 0 so it doesn't matter if we are in eval or train mode.
-        diffuser.train()
-        text_encoder.gradient_checkpointing_enable()
-        diffuser.enable_gradient_checkpointing()
+        # diffuser.train()
+        # text_encoder.gradient_checkpointing_enable()
+        # diffuser.enable_gradient_checkpointing()
 
     if args.enable_xformers_memory_efficient_attention:
         if is_xformers_available():
@@ -858,8 +883,8 @@ if __name__ == '__main__':
 
     # Enable TF32 for faster training on Ampere GPUs,
     # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
-    if args.allow_tf32:
-        torch.backends.cuda.matmul.allow_tf32 = True
+    # if args.allow_tf32:
+    #     torch.backends.cuda.matmul.allow_tf32 = True
 
     if args.scale_lr:
         args.learning_rate = (
@@ -868,7 +893,11 @@ if __name__ == '__main__':
 
     # Initialize the optimizer
     optimizer = torch.optim.AdamW(
-        text_encoder.get_input_embeddings().parameters(),  # only optimize the embeddings
+        # from original SD example:
+        # text_encoder.get_input_embeddings().parameters(),  # only optimize the embeddings
+        # GPT adaptation:
+        # optimize only target placeholder token embeddings
+        [text_encoder.shared.weight[token_id] for token_id in placeholder_token_ids],
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
