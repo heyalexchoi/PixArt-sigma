@@ -924,26 +924,27 @@ if __name__ == '__main__':
     # unfreeze the token embeddings parameters
     text_encoder.get_input_embeddings().weight.requires_grad = True
 
-    # if args.gradient_checkpointing:
+    if config.grad_checkpointing:
         # Keep unet in train mode if we are using gradient checkpointing to save memory.
         # The dropout cannot be != 0 so it doesn't matter if we are in eval or train mode.
-        # diffuser.train()
-        # text_encoder.gradient_checkpointing_enable()
-        # diffuser.enable_gradient_checkpointing()
+        diffuser.train()
+        text_encoder.gradient_checkpointing_enable()
+        # diffuser grad checkpointing is setup in build_model
+        
 
-    if args.enable_xformers_memory_efficient_attention:
-        if is_xformers_available():
-            logger.info('xformers available. importing...')
-            import xformers
+    # if args.enable_xformers_memory_efficient_attention:
+    #     if is_xformers_available():
+    #         logger.info('xformers available. importing...')
+    #         import xformers
 
-            xformers_version = version.parse(xformers.__version__)
-            if xformers_version == version.parse("0.0.16"):
-                logger.warning(
-                    "xFormers 0.0.16 cannot be used for training in some GPUs. If you observe problems during training, please update xFormers to at least 0.0.17. See https://huggingface.co/docs/diffusers/main/en/optimization/xformers for more details."
-                )
-            diffuser.enable_xformers_memory_efficient_attention()
-        else:
-            raise ValueError("xformers is not available. Make sure it is installed correctly")
+    #         xformers_version = version.parse(xformers.__version__)
+    #         if xformers_version == version.parse("0.0.16"):
+    #             logger.warning(
+    #                 "xFormers 0.0.16 cannot be used for training in some GPUs. If you observe problems during training, please update xFormers to at least 0.0.17. See https://huggingface.co/docs/diffusers/main/en/optimization/xformers for more details."
+    #             )
+    #         diffuser.enable_xformers_memory_efficient_attention()
+    #     else:
+    #         raise ValueError("xformers is not available. Make sure it is installed correctly")
 
     # Enable TF32 for faster training on Ampere GPUs,
     # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
@@ -955,7 +956,6 @@ if __name__ == '__main__':
             args.learning_rate * config.gradient_accumulation_steps * config.train_batch_size * accelerator.num_processes
         )
 
-    import pdb; pdb.set_trace()
     # Initialize the optimizer
     optimizer = torch.optim.AdamW(
         # from original SD example:
