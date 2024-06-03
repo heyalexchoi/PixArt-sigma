@@ -166,6 +166,8 @@ def log_validation_loss(
             input_ids = batch[1].to(device=text_encoder.device)
             # encode input_ids w/ text_encoder
             y = text_encoder(input_ids)[0].to(dtype=torch_dtype)
+            # very strange but seems like this shape is expected. assertion thrown otherwise
+            y = y.unsqueeze(1)
             y_mask = batch[2]
             
             data_info = batch[3]
@@ -200,7 +202,7 @@ def log_validation_loss(
         dataset_name = val_dataloader.dataset.name
         if dataset_name:
             dataset_validation_loss = np.mean(dataset_validation_losses)
-            logs[f'val_loss_{bucket_name}'] = dataset_validation_loss
+            logs[f'val_loss_{dataset_name}'] = dataset_validation_loss
         
     # mean val loss across datasets
     mean_validation_loss = np.mean(all_validation_losses)
@@ -229,6 +231,7 @@ def train(
         val_dataloaders,
         optimizer,
         lr_scheduler,
+        config,
         ):
 
     # keep original embeddings as reference
@@ -757,16 +760,18 @@ if __name__ == '__main__':
     if config.multi_scale:
         
         for dataset in train_datasets:
+            # not dropping last here
             batch_sampler = AspectRatioBatchSampler(sampler=RandomSampler(dataset), dataset=dataset,
-                                                    batch_size=config.train_batch_size, aspect_ratios=dataset.aspect_ratio, drop_last=True,
+                                                    batch_size=config.train_batch_size, aspect_ratios=dataset.aspect_ratio, drop_last=False,
                                                     ratio_nums=dataset.ratio_nums, config=config, valid_num=config.valid_num)
             train_dataloader = build_dataloader(dataset, batch_sampler=batch_sampler, num_workers=config.num_workers)
             train_dataloaders.append(train_dataloader)
 
         if val_datasets:
             for val_dataset in val_datasets:
+                # not dropping last here
                 val_batch_sampler = AspectRatioBatchSampler(sampler=RandomSampler(val_dataset), dataset=val_dataset,
-                                                    batch_size=config.train_batch_size, aspect_ratios=dataset.aspect_ratio, drop_last=True,
+                                                    batch_size=config.train_batch_size, aspect_ratios=dataset.aspect_ratio, drop_last=False,
                                                     ratio_nums=dataset.ratio_nums, config=config, valid_num=config.valid_num)
                 val_dataloader = build_dataloader(val_dataset, batch_sampler=val_batch_sampler, num_workers=config.num_workers)
                 val_dataloaders.append(val_dataloader)
@@ -982,4 +987,5 @@ if __name__ == '__main__':
         val_dataloaders=val_dataloaders,
         optimizer=optimizer,
         lr_scheduler=lr_scheduler,
+        config=config,
         )
