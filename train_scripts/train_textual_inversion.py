@@ -62,7 +62,8 @@ import json
 from diffusion.utils.text_embeddings import encode_prompts, get_path_for_encoded_prompt
 from diffusion.utils.image_evaluation import generate_images, get_image_gen_pipeline
 from diffusion.utils.train import log_eval_images, log_cmmd, prepare_for_inference, \
-    prepare_for_training, get_step_bucket_loss
+    prepare_for_training
+        # , get_step_bucket_loss
 
 from diffusion.model.nets.diffusers import convert_net_to_diffusers
 import torchvision.transforms as T
@@ -148,7 +149,7 @@ def log_validation_loss(
     text_encoder.eval()
     logs = {}
     all_validation_losses = []
-    step_bucket_losses = {} # key: bucket name, value: list of each batch's mean losses for that bucket. 
+    # step_bucket_losses = {} # key: bucket name, value: list of each batch's mean losses for that bucket. 
     logger.info(f"logging validation loss for {len(val_dataset)} images")
     for val_dataloader in val_dataloaders:
         dataset_validation_losses = []
@@ -182,15 +183,16 @@ def log_validation_loss(
                 gathered_losses = accelerator.gather(loss_term['loss']).cpu().numpy()
                 mean_loss = gathered_losses.mean()
                 dataset_validation_losses.append(mean_loss)
-                step_bucket_mean_loss = get_step_bucket_loss(
-                    gathered_timesteps=accelerator.gather(timesteps).cpu().numpy(),
-                    gathered_losses=gathered_losses,
-                )
+                # step_bucket_mean_loss = get_step_bucket_loss(
+                #     config=config,
+                #     gathered_timesteps=accelerator.gather(timesteps).cpu().numpy(),
+                #     gathered_losses=gathered_losses,
+                # )
                 # adds this batch's mean losses to each step bucket
-                for bucket_name, bucket_loss in step_bucket_mean_loss.items():
-                    if bucket_name not in step_bucket_losses:
-                        step_bucket_losses[bucket_name] = []
-                    step_bucket_losses[bucket_name].append(bucket_loss)
+                # for bucket_name, bucket_loss in step_bucket_mean_loss.items():
+                #     if bucket_name not in step_bucket_losses:
+                #         step_bucket_losses[bucket_name] = []
+                #     step_bucket_losses[bucket_name].append(bucket_loss)
 
         # gather val losses across datasets
         all_validation_losses.extend(dataset_validation_losses)
@@ -205,9 +207,9 @@ def log_validation_loss(
     logs['val_loss'] = mean_validation_loss
 
     # get mean of step bucket losses across batches and datasets
-    for bucket_name, bucket_losses in step_bucket_losses.items():
-        bucket_mean_loss = np.mean(bucket_losses)
-        logs[f'val_loss_{bucket_name}'] = bucket_mean_loss
+    # for bucket_name, bucket_losses in step_bucket_losses.items():
+    #     bucket_mean_loss = np.mean(bucket_losses)
+    #     logs[f'val_loss_{bucket_name}'] = bucket_mean_loss
         
     info = f"Global Step {global_step}"
     info += ', '.join([f"{k}:{v:.4f}" for k, v in logs.items()])
@@ -359,12 +361,13 @@ def train(
                     })
                 logs.update(lr=lr)
                 # mean bucket losses
-                step_bucket_mean_loss = get_step_bucket_loss(
-                    gathered_timesteps=accelerator.gather(timesteps).cpu().numpy(),
-                    gathered_losses=gathered_losses,
-                )
-                for bucket_name, bucket_loss in step_bucket_mean_loss.items():
-                    logs[f'{bucket_name}_loss'] = bucket_loss
+                # step_bucket_mean_loss = get_step_bucket_loss(
+                #     config=config,
+                #     gathered_timesteps=accelerator.gather(timesteps).cpu().numpy(),
+                #     gathered_losses=gathered_losses,
+                # )
+                # for bucket_name, bucket_loss in step_bucket_mean_loss.items():
+                #     logs[f'{bucket_name}_loss'] = bucket_loss
                 if grad_norm is not None:
                     logs.update(grad_norm=accelerator.gather(grad_norm).mean().item())
                 log_buffer.update(logs)
