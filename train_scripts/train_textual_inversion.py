@@ -465,7 +465,8 @@ def train(
 def _get_image_gen_pipeline(
         diffuser, 
         text_encoder, 
-        tokenizer):
+        tokenizer,
+        ):
     # diffusers_transformer = convert_net_to_diffusers(
     #     state_dict=model.state_dict(),
     #     image_size=image_size,

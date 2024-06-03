@@ -8,8 +8,7 @@ from diffusion.utils.dist_utils import flush
 logger = get_logger(__name__)
 
 class PromptEmbedDataset(Dataset):
-    def __init__(self, negative_prompt, prompt_embeds, prompt_attention_mask, negative_prompt_embeds=None, negative_prompt_attention_mask=None):
-        self.negative_prompt = negative_prompt
+    def __init__(self, prompt_embeds, prompt_attention_mask, negative_prompt_embeds=None, negative_prompt_attention_mask=None):
         self.prompt_embeds = prompt_embeds
         self.prompt_attention_mask = prompt_attention_mask
         self.negative_prompt_embeds = negative_prompt_embeds
@@ -19,7 +18,6 @@ class PromptEmbedDataset(Dataset):
         return len(self.prompt_embeds)
 
     def __getitem__(self, idx):
-        
         item = {
             'prompt_embeds': self.prompt_embeds[idx],
             'prompt_attention_mask': self.prompt_attention_mask[idx]
@@ -116,6 +114,8 @@ def generate_images(
 
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     dataloader = accelerator.prepare(dataloader)
+
+    pipeline = accelerator.prepare(pipeline)
         
     # Generate images in batches
     # for i in range(0, len(prompt_embeds), batch_size):
@@ -139,6 +139,8 @@ def generate_images(
                 logger.info('using negative prompt embeds')
         else:
             prompts = batch['prompt']
+            # pipeline expects empty string for empty negative prompt, not None
+            negative_prompt = '' if negative_prompt is None else negative_prompt
 
             batch_prompt_embeds = None
             batch_prompt_attention_mask = None
