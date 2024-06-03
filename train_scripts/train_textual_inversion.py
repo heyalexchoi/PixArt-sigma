@@ -955,13 +955,12 @@ if __name__ == '__main__':
             args.learning_rate * config.gradient_accumulation_steps * config.train_batch_size * accelerator.num_processes
         )
 
+    import pdb; pdb.set_trace()
     # Initialize the optimizer
     optimizer = torch.optim.AdamW(
         # from original SD example:
         # text_encoder.get_input_embeddings().parameters(),  # only optimize the embeddings
-        # GPT adaptation:
-        # optimize only target placeholder token embeddings
-        [text_encoder.shared.weight[token_id] for token_id in placeholder_token_ids],
+        [text_encoder.get_input_embeddings().weight],
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
