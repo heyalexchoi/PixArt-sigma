@@ -64,7 +64,7 @@ def log_cmmd(
     if not accelerator.is_main_process:
         return
     
-    samples = get_cmmd_samples()
+    samples = get_cmmd_samples(config=config)
     if not samples:
         logger.warning("No CMMD data provided. Skipping CMMD calculation.")
         return
@@ -74,8 +74,6 @@ def log_cmmd(
     t5_save_dir = config.t5_save_dir
     max_token_length = config.max_token_length
     
-    negative_prompt = config.cmmd.get('negative_prompt')
-
     # generate images using the text captions
     logger.info("Generating CMMD images using the text captions...")
    
@@ -102,17 +100,30 @@ def log_cmmd(
     # generate images and compute CMMD for either train or val items
     # note: generated images are squares of image_size
     def generate_images_and_cmmd(items):
-        caption_features, attention_masks = build_t5_batch_tensors_from_item_paths([item['path'] for item in items])
-        negative_prompt_embeds = None
-        negative_prompt_attention_mask = None
-        if negative_prompt:
-            negative_prompt_embed_dict = torch.load(
-                get_path_for_encoded_prompt(negative_prompt, max_length),
-                map_location='cpu'
-                )
-            repeats = caption_features.size(0)
-            negative_prompt_embeds = negative_prompt_embed_dict['prompt_embeds'].unsqueeze(0).repeat(repeats, 1, 1)
-            negative_prompt_attention_mask = negative_prompt_embed_dict['prompt_attention_mask'].unsqueeze(0).repeat(repeats, 1)
+        negative_prompt = config.cmmd.get('negative_prompt')
+        should_encode_prompts = config.cmmd.get('should_encode_prompts', False)
+        if not should_encode_prompts:
+            caption_features, attention_masks = build_t5_batch_tensors_from_item_paths([item['path'] for item in items])
+            negative_prompt_embeds = None
+            negative_prompt_attention_mask = None
+            prompts = None
+            if negative_prompt:
+                negative_prompt_embed_dict = torch.load(
+                    get_path_for_encoded_prompt(prompt=negative_prompt, max_token_length=max_token_length),
+                    map_location='cpu'
+                    )
+                repeats = caption_features.size(0)
+                negative_prompt_embeds = negative_prompt_embed_dict['prompt_embeds'].unsqueeze(0).repeat(repeats, 1, 1)
+                negative_prompt_attention_mask = negative_prompt_embed_dict['prompt_attention_mask'].unsqueeze(0).repeat(repeats, 1)
+                negative_prompt = None
+        else:
+            prompts = [item['prompt'] for item in items]
+            if negative_prompt is None:
+                negative_prompt = ''
+            caption_features = None
+            attention_masks = None
+            negative_prompt_embeds = None
+            negative_prompt_attention_mask = None
 
         generated_images = generate_images(
             pipeline=pipeline,
@@ -128,6 +139,8 @@ def log_cmmd(
             guidance_scale=config.cmmd.guidance_scale,
             device=accelerator.device,
             max_token_length=config.max_token_length,
+            prompts=prompts,
+            negative_prompt=negative_prompt,
 
         )
         orig_image_paths = [os.path.join(data_root, item['path']) for item in items]
@@ -171,7 +184,6 @@ def log_cmmd(
             }, 
             step=global_step
         )
-
 
 @torch.inference_mode()
 def log_eval_images(
