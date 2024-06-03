@@ -90,6 +90,7 @@ import safetensors
 
 from torch.utils.data import DataLoader
 import math
+import torch.nn.functional as F
 
 class TextualInversionDataset(InternalDataMSSigmaAC):
     def __init__(
@@ -98,7 +99,10 @@ class TextualInversionDataset(InternalDataMSSigmaAC):
         *args,
         **kwargs,
     ):
-        super().__init__(*args, **kwargs)
+        super().__init__(
+            load_t5_feat=False, 
+            *args, **kwargs,
+            )
         self.tokenizer = tokenizer
 
     def __getitem__(self, index):
@@ -123,9 +127,9 @@ class TextualInversionDataset(InternalDataMSSigmaAC):
             max_length=self.max_token_length,
             return_tensors="pt",
         )
-
-        input_ids = tokenized_text.input_ids
-        attention_mask = tokenized_text.attention_mask
+        # squeeze to get rid of extra batch dimension
+        input_ids = tokenized_text.input_ids.squeeze(0)
+        attention_mask = tokenized_text.attention_mask.squeeze(0)
 
         return img, input_ids, attention_mask, data_info
 
@@ -158,7 +162,7 @@ def log_validation_loss(
             latents = (z * config.scale_factor)
 
             # get tokenized text / input_ids
-            input_ids = batch[1]
+            input_ids = batch[1].to(device=text_encoder.device)
             # encode input_ids w/ text_encoder
             y = text_encoder(input_ids)[0].to(dtype=torch_dtype)
             y_mask = batch[2]
@@ -218,6 +222,7 @@ def train(
         text_encoder,
         tokenizer,
         diffuser,
+        noise_scheduler,
         train_dataloaders,
         val_dataloaders,
         optimizer,
@@ -253,6 +258,7 @@ def train(
             diffuser=diffuser,
             text_encoder=text_encoder,
             tokenizer=tokenizer,
+            scheduler=noise_scheduler,
             )
 
         if config.eval.at_start:
@@ -297,19 +303,21 @@ def train(
                     break
                 logger.debug('step: {}'.format(step))
                 z = batch[0]
-                clean_images = z * config.scale_factor
+                image_latents = z * config.scale_factor
 
                 # get tokenized text / input_ids
-                input_ids = batch[1]
+                input_ids = batch[1].to(device=text_encoder.device)
                 # encode input_ids w/ text_encoder
                 y = text_encoder(input_ids)[0].to(dtype=torch_dtype)
+                # very strange but seems like this shape is expected. assertion thrown otherwise
+                y = y.unsqueeze(1)
                 y_mask = batch[2]
 
                 data_info = batch[3]
 
                 # Sample a random timestep for each image
-                bs = clean_images.shape[0]
-                timesteps = torch.randint(0, config.train_sampling_steps, (bs,), device=clean_images.device).long()
+                bsz = image_latents.shape[0]
+                timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=image_latents.device).long()
 
                 grad_norm = None
                 data_time_all += time.time() - data_time_start
@@ -318,14 +326,15 @@ def train(
                     logger.debug('accumulating')
                     optimizer.zero_grad()
                     loss_term = train_diffusion.training_losses(
-                        diffuser, clean_images, timesteps, 
+                        diffuser, image_latents, timesteps, 
                         model_kwargs=dict(y=y, mask=y_mask, data_info=data_info)
                         )
                     loss = loss_term['loss'].mean()
-                    logger.debug('accumulating backward')
                     accelerator.backward(loss)
+
                     if accelerator.sync_gradients:
                         grad_norm = accelerator.clip_grad_norm_(text_encoder.parameters(), config.gradient_clip)
+
                     optimizer.step()
                     lr_scheduler.step()
 
@@ -338,7 +347,7 @@ def train(
                         index_no_updates
                     ] = orig_embeds_params[index_no_updates]
 
-                gathered_losses = accelerator.gather(loss_term['loss']).detach().cpu().numpy()
+                gathered_losses = accelerator.gather(loss).detach().cpu().numpy()
                 lr = lr_scheduler.get_last_lr()[0]
                 
                 mean_gathered_losses = gathered_losses.mean().item()
@@ -369,7 +378,7 @@ def train(
                     log_buffer.average()
                     info = f"Global Step: {global_step}. Epochs/Total: {epoch}/{config.num_epochs}. Current Epoch Steps: {step + 1}/{steps_per_epoch}. total_eta: {eta}, " \
                         f"epoch_eta:{eta_epoch}, time_all:{t:.3f}, time_data:{t_d:.3f}, lr:{lr:.3e}, "
-                    info += f's:({model.module.h}, {model.module.w}), ' if hasattr(model, 'module') else f's:({model.h}, {model.w}), '                
+                    info += f's:({diffuser.module.h}, {diffuser.module.w}), ' if hasattr(diffuser, 'module') else f's:({diffuser.h}, {diffuser.w}), '                
                     info += ', '.join([f"{k}:{v:.4f}" for k, v in log_buffer.output.items()])
                     logger.info(info)
                     accelerator.log(log_buffer.output, step=global_step)
@@ -402,11 +411,12 @@ def train(
                 should_log_cmmd = (config.cmmd.every_n_steps and global_step % config.cmmd.every_n_steps == 0)
 
                 if (should_log_eval or should_log_cmmd):
-                    model = prepare_for_inference(model)
+                    diffuser = prepare_for_inference(diffuser)
                     pipeline = _get_image_gen_pipeline(
                         diffuser=diffuser,
                         text_encoder=text_encoder,
                         tokenizer=tokenizer,
+                        scheduler=noise_scheduler,
                         )
                     if should_log_eval:
                         log_eval_images(
@@ -424,7 +434,7 @@ def train(
                             global_step=global_step,
                             )
                     
-                    model = prepare_for_training(model)
+                    diffuser = prepare_for_training(diffuser)
                     del pipeline
                     flush()
 
@@ -438,7 +448,7 @@ def train(
                         args=args,
                     )
         if (config.log_val_loss_epochs and epoch % config.log_val_loss_epochs == 0) or epoch == config.num_epochs:
-            log_validation_loss(model=model, global_step=global_step)
+            log_validation_loss(diffuser=diffuser, global_step=global_step)
         
         should_log_eval = (config.eval.every_n_epochs and epoch % config.eval.every_n_epochs == 0) or \
             (epoch == config.num_epochs and config.eval.at_end)
@@ -446,11 +456,12 @@ def train(
             (epoch == config.num_epochs and config.cmmd.at_end)
 
         if (should_log_eval or should_log_cmmd):
-            model = prepare_for_inference(model)
+            diffuser = prepare_for_inference(diffuser)
             pipeline = _get_image_gen_pipeline(
                 diffuser=diffuser,
                 text_encoder=text_encoder,
                 tokenizer=tokenizer,
+                scheduler=noise_scheduler,
                 )
             if should_log_eval:
                 log_eval_images(pipeline=pipeline, global_step=global_step)
@@ -458,7 +469,7 @@ def train(
             if should_log_cmmd:
                 log_cmmd(pipeline=pipeline, global_step=global_step)
             
-            model = prepare_for_training(model)
+            diffuser = prepare_for_training(diffuser)
             del pipeline
             flush()
 
@@ -466,19 +477,21 @@ def _get_image_gen_pipeline(
         diffuser, 
         text_encoder, 
         tokenizer,
+        scheduler,
         ):
-    # diffusers_transformer = convert_net_to_diffusers(
-    #     state_dict=model.state_dict(),
-    #     image_size=image_size,
-    # )
-    # diffusers_transformer = diffusers_transformer.to(torch_dtype)
+    diffusers_transformer = convert_net_to_diffusers(
+        state_dict=diffuser.state_dict(),
+        image_size=image_size,
+    )
+    diffusers_transformer = diffusers_transformer.to(torch_dtype)
     return get_image_gen_pipeline(
                 pipeline_load_from=config.pipeline_load_from,
                 torch_dtype=torch_dtype,
                 device=accelerator.device,
-                transformer=diffuser,
+                transformer=diffusers_transformer,
                 text_encoder=text_encoder,
                 tokenizer=tokenizer,
+                scheduler=scheduler,
                 )
 
 def save_progress(text_encoder, placeholder_token_ids, accelerator, args, global_step, safe_serialization=True):
@@ -822,15 +835,20 @@ if __name__ == '__main__':
         pipeline_name, subfolder="text_encoder", 
         torch_dtype=torch_dtype).to(accelerator.device)
     
-    vae = AutoencoderKL.from_pretrained(
-        pipeline_name, subfolder="vae",
-    )
+    logger.info('noise_scheduler.config: ', noise_scheduler.config)
+    
+    # do I need this?
+    # vae = AutoencoderKL.from_pretrained(
+    #     pipeline_name, subfolder="vae",
+    # )
+
+    diffuser = model
 
     # convert model to diffusers
-    diffuser = convert_net_to_diffusers(
-        state_dict=model.state_dict(),
-        image_size=image_size,
-    )
+    # diffuser = convert_net_to_diffusers(
+    #     state_dict=model.state_dict(),
+    #     image_size=image_size,
+    # )
     
     # Add the placeholder token in tokenizer
     placeholder_tokens = [args.placeholder_token]
@@ -870,7 +888,7 @@ if __name__ == '__main__':
             token_embeds[token_id] = token_embeds[initializer_token_id].clone()
 
     # Freeze vae and unet
-    vae.requires_grad_(False)
+    # vae.requires_grad_(False)
     diffuser.requires_grad_(False)
 
     # from original SD example:
@@ -956,6 +974,7 @@ if __name__ == '__main__':
         text_encoder=text_encoder,
         tokenizer=tokenizer,
         diffuser=diffuser,
+        noise_scheduler=noise_scheduler,
         train_dataloaders=train_dataloaders,
         val_dataloaders=val_dataloaders,
         optimizer=optimizer,
