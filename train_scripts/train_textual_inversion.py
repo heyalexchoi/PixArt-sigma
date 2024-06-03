@@ -417,7 +417,10 @@ def train(
                 should_log_cmmd = (config.cmmd.every_n_steps and global_step % config.cmmd.every_n_steps == 0)
 
                 if (should_log_eval or should_log_cmmd):
-                    diffuser = prepare_for_inference(diffuser)
+                    text_encoder = prepare_for_inference(
+                                    accelerator=accelerator,
+                                    model=text_encoder,
+                                    )
                     pipeline = _get_image_gen_pipeline(
                         diffuser=diffuser,
                         text_encoder=text_encoder,
@@ -440,7 +443,10 @@ def train(
                             global_step=global_step,
                             )
                     
-                    diffuser = prepare_for_training(diffuser)
+                    text_encoder = prepare_for_training(
+                        accelerator=accelerator,
+                        model=text_encoder,
+                    )
                     del pipeline
                     flush()
 
@@ -462,7 +468,10 @@ def train(
             (epoch == config.num_epochs and config.cmmd.at_end)
 
         if (should_log_eval or should_log_cmmd):
-            diffuser = prepare_for_inference(diffuser)
+            text_encoder = prepare_for_inference(
+                                accelerator=accelerator,
+                                model=text_encoder,
+                                )
             pipeline = _get_image_gen_pipeline(
                 diffuser=diffuser,
                 text_encoder=text_encoder,
@@ -475,7 +484,10 @@ def train(
             if should_log_cmmd:
                 log_cmmd(pipeline=pipeline, global_step=global_step)
             
-            diffuser = prepare_for_training(diffuser)
+            text_encoder = prepare_for_training(
+                            accelerator=accelerator,
+                            model=text_encoder,
+                            )
             del pipeline
             flush()
 
@@ -909,10 +921,8 @@ if __name__ == '__main__':
     # freeze everything
     for name, param in text_encoder.named_parameters():
         param.requires_grad = False
-    
-    # unfreeze target / placeholder token embeddings
-    for token_id in placeholder_token_ids:
-        text_encoder.shared.weight[token_id].requires_grad = True
+    # unfreeze the token embeddings parameters
+    text_encoder.get_input_embeddings().weight.requires_grad = True
 
     # if args.gradient_checkpointing:
         # Keep unet in train mode if we are using gradient checkpointing to save memory.
