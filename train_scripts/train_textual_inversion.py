@@ -290,6 +290,14 @@ def train(
         flush()
         logger.debug('finished w image gen pipeline')
 
+    # verify
+
+    # Log the initial values of the new token embeddings using .data
+    new_token_indices = list(range(len(tokenizer) - len(placeholder_token_ids), len(tokenizer)))
+    initial_embeddings = orig_embeds_params[new_token_indices].clone()
+    print("Initial new token embeddings:", initial_embeddings)
+    #
+
     # train loop
     for epoch in range(start_epoch + 1, config.num_epochs + 1):
         logger.debug('start epoch')
@@ -338,7 +346,10 @@ def train(
                     accelerator.backward(loss)
 
                     if accelerator.sync_gradients:
-                        grad_norm = accelerator.clip_grad_norm_(text_encoder.parameters(), config.gradient_clip)
+                        grad_norm = accelerator.clip_grad_norm_(
+                            text_encoder.get_input_embeddings().weight, 
+                            config.gradient_clip,
+                            )
 
                     optimizer.step()
                     lr_scheduler.step()
@@ -395,6 +406,24 @@ def train(
                 global_step += 1
                 progress_bar.update(1)
                 data_time_start = time.time()
+
+                # verify change
+                embedding_layer = text_encoder.get_input_embeddings()
+                # Check gradients for the new token indices
+                grad_embeddings = embedding_layer.weight.grad[new_token_indices].clone().detach().to(accelerator.device)
+                logger.info("Gradients for new token embeddings after backward pass:", grad_embeddings)
+                # Log the updated values of the new token embeddings using .data
+                
+                updated_embeddings = embedding_layer.weight.data[new_token_indices].clone().detach().to(accelerator.device)
+                logger.info("Updated new token embeddings after epoch", epoch + 1, ":", updated_embeddings)
+
+                # Calculate the Euclidean distance between initial and updated embeddings
+                distance = torch.norm(initial_embeddings - updated_embeddings, dim=1)
+                logger.info("Euclidean distance of new token embeddings after epoch", epoch + 1, ":", distance)
+
+                # Update the initial embeddings for the next check
+                initial_embeddings = updated_embeddings.clone().detach()
+                #
 
                 # STEP END actions: save, log val loss, eval images, cmmd
                 if config.save_model_steps and global_step % config.save_model_steps == 0:
@@ -898,6 +927,8 @@ if __name__ == '__main__':
     initializer_token_id = token_ids[0]
     placeholder_token_ids = tokenizer.convert_tokens_to_ids(placeholder_tokens)
 
+    logger.info(f'placeholder_token_ids: {placeholder_token_ids}')
+
     # Resize the token embeddings as we are adding new special tokens to the tokenizer
     text_encoder.resize_token_embeddings(len(tokenizer))
 
@@ -923,6 +954,11 @@ if __name__ == '__main__':
         param.requires_grad = False
     # unfreeze the token embeddings parameters
     text_encoder.get_input_embeddings().weight.requires_grad = True
+
+    # this verified that only shared weights (input embeddings) were unfrozen
+    # for name, param in text_encoder.named_parameters():
+    #     logger.info(f'requires_grad {name}: {param.requires_grad}')
+    
 
     if config.grad_checkpointing:
         # Keep unet in train mode if we are using gradient checkpointing to save memory.
@@ -982,6 +1018,7 @@ if __name__ == '__main__':
     # There is no specific order to remember, you just need to unpack the
     # objects in the same order you gave them to the prepare method.
     diffuser = accelerator.prepare(diffuser)
+    text_encoder = accelerator.prepare(text_encoder)
     optimizer, lr_scheduler = accelerator.prepare(optimizer, lr_scheduler)
     train_dataloaders = [accelerator.prepare(train_dataloader) for train_dataloader in train_dataloaders]
     val_dataloaders = [accelerator.prepare(val_dataloader) for val_dataloader in val_dataloaders] if val_dataloaders else None
