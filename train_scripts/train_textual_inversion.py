@@ -411,15 +411,15 @@ def train(
                 embedding_layer = text_encoder.get_input_embeddings()
                 # Check gradients for the new token indices
                 grad_embeddings = embedding_layer.weight.grad[new_token_indices].clone().detach().to(accelerator.device)
-                logger.info("Gradients for new token embeddings after backward pass:", grad_embeddings)
+                logger.info(f"Gradients for new token embeddings after backward pass: {grad_embeddings}")
                 # Log the updated values of the new token embeddings using .data
                 
                 updated_embeddings = embedding_layer.weight.data[new_token_indices].clone().detach().to(accelerator.device)
-                logger.info("Updated new token embeddings after epoch", epoch + 1, ":", updated_embeddings)
+                logger.info(f"Updated new token embeddings after epoch {epoch + 1}: {updated_embeddings}")
 
                 # Calculate the Euclidean distance between initial and updated embeddings
                 distance = torch.norm(initial_embeddings - updated_embeddings, dim=1)
-                logger.info("Euclidean distance of new token embeddings after epoch", epoch + 1, ":", distance)
+                logger.info(f"Euclidean distance of new token embeddings after epoch {epoch + 1}: {distance}")
 
                 # Update the initial embeddings for the next check
                 initial_embeddings = updated_embeddings.clone().detach()
@@ -889,7 +889,7 @@ if __name__ == '__main__':
         pipeline_name, subfolder="text_encoder", 
         torch_dtype=torch_dtype).to(accelerator.device)
     
-    logger.info('noise_scheduler.config: ', noise_scheduler.config)
+    # logger.info('noise_scheduler.config: ', noise_scheduler.config)
     
     # do I need this?
     # vae = AutoencoderKL.from_pretrained(
