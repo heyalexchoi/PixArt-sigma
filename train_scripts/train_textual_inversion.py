@@ -959,8 +959,7 @@ if __name__ == '__main__':
     diffuser = model
     # freeze diffuser
     diffuser.requires_grad_(False)
-    for name, param in diffuser.named_parameters():
-        logger.info(f'diffuser param: {name} requires_grad: {param.requires_grad}')
+    
     # freeze text encoder
     for name, param in text_encoder.named_parameters():
         param.requires_grad = False
