@@ -93,6 +93,8 @@ from torch.utils.data import DataLoader
 import math
 import torch.nn.functional as F
 
+logger = get_logger(__name__)
+
 class TextualInversionDataset(InternalDataMSSigmaAC):
     def __init__(
         self,
@@ -734,7 +736,7 @@ if __name__ == '__main__':
     if accelerator.is_main_process:
         if os.path.exists(os.path.join(config.work_dir, log_name)):
             rename_file_with_creation_time(os.path.join(config.work_dir, log_name))
-    logger = get_root_logger(os.path.join(config.work_dir, log_name))
+    
 
     logger.info(accelerator.state)
     config.seed = init_random_seed(config.get('seed', None))

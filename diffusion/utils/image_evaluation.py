@@ -87,6 +87,7 @@ def generate_images(
         seed=0,
         guidance_scale=4.5,
         output_type='pil',
+        clean_caption=False, # default for pipeline is True but this removes subject tokens, eg '@name'
     ):
     """
     batch generates images from caption embeddings with batch dim
@@ -167,6 +168,7 @@ def generate_images(
             prompt=prompts,
             negative_prompt=negative_prompt, # this has to be explicitly set to None if using negative prompt embeds
             output_type=output_type,
+            clean_caption=clean_caption,
         ).images
 
         batch_images = accelerator.gather(batch_images)
