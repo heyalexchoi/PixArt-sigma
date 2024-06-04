@@ -296,9 +296,9 @@ def train(
     # verify
 
     # Log the initial values of the new token embeddings using .data
-    new_token_indices = list(range(len(tokenizer) - len(placeholder_token_ids), len(tokenizer)))
-    initial_embeddings = orig_embeds_params[new_token_indices].clone()
-    print("Initial new token embeddings:", initial_embeddings)
+    # new_token_indices = list(range(len(tokenizer) - len(placeholder_token_ids), len(tokenizer)))
+    # initial_embeddings = orig_embeds_params[new_token_indices].clone()
+    # print("Initial new token embeddings:", initial_embeddings)
     #
 
     # train loop
@@ -411,21 +411,19 @@ def train(
                 data_time_start = time.time()
 
                 # verify change
-                embedding_layer = text_encoder.get_input_embeddings()
+                # embedding_layer = text_encoder.get_input_embeddings()
                 # Check gradients for the new token indices
-                grad_embeddings = embedding_layer.weight.grad[new_token_indices].clone().detach().to(accelerator.device)
-                logger.info(f"Gradients for new token embeddings after backward pass: {grad_embeddings}")
+                # grad_embeddings = embedding_layer.weight.grad[new_token_indices].clone().detach().to(accelerator.device)
+                # logger.info(f"Gradients for new token embeddings after backward pass: {grad_embeddings}")
                 # Log the updated values of the new token embeddings using .data
-                
-                updated_embeddings = embedding_layer.weight.data[new_token_indices].clone().detach().to(accelerator.device)
-                logger.info(f"Updated new token embeddings after epoch {epoch + 1}: {updated_embeddings}")
-
+            
                 # Calculate the Euclidean distance between initial and updated embeddings
-                distance = torch.norm(initial_embeddings - updated_embeddings, dim=1)
-                logger.info(f"Euclidean distance of new token embeddings after epoch {epoch + 1}: {distance}")
+                # updated_embeddings = embedding_layer.weight.data[new_token_indices].clone().detach().to(accelerator.device)
+                # distance = torch.norm(initial_embeddings - updated_embeddings, dim=1)
+                # logger.info(f"Euclidean distance of new token embeddings after epoch {epoch + 1}: {distance}")
 
                 # Update the initial embeddings for the next check
-                initial_embeddings = updated_embeddings.clone().detach()
+                # initial_embeddings = updated_embeddings.clone().detach()
                 #
 
                 # STEP END actions: save, log val loss, eval images, cmmd
