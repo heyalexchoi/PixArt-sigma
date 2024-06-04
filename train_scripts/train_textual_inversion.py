@@ -489,7 +489,12 @@ def train(
                         args=args,
                     )
         if (config.log_val_loss_epochs and epoch % config.log_val_loss_epochs == 0) or epoch == config.num_epochs:
-            log_validation_loss(diffuser=diffuser, global_step=global_step)
+            log_validation_loss(
+                        text_encoder=text_encoder,
+                        diffuser=diffuser,
+                        global_step=global_step,
+                        val_dataloaders=val_dataloaders,
+                        )
         
         should_log_eval = (config.eval.every_n_epochs and epoch % config.eval.every_n_epochs == 0) or \
             (epoch == config.num_epochs and config.eval.at_end)
