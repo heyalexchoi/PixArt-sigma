@@ -48,7 +48,6 @@ def get_image_gen_pipeline(
         transformer,
         text_encoder=None,
         tokenizer=None,
-        scheduler=None,
     ):
     """Get pipeline with image generation components, without text encoding. Optionally load a passed in transformer"""
     logger.info(f"Loading image gen pipeline {pipeline_load_from} to device: {device} and dtype {torch_dtype}...")
@@ -58,8 +57,6 @@ def get_image_gen_pipeline(
         text_encoder=text_encoder,
         torch_dtype=torch_dtype,
         )
-    if scheduler is not None:
-        kwargs['scheduler'] = scheduler
     pipe = PixArtSigmaPipeline.from_pretrained(
         pipeline_load_from,
         use_safetensors=True,

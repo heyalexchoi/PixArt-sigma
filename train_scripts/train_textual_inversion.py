@@ -229,7 +229,6 @@ def train(
         text_encoder,
         tokenizer,
         diffuser,
-        noise_scheduler,
         train_dataloaders,
         val_dataloaders,
         optimizer,
@@ -266,7 +265,6 @@ def train(
             diffuser=diffuser,
             text_encoder=text_encoder,
             tokenizer=tokenizer,
-            scheduler=noise_scheduler,
             )
         logger.info(f'pipeline.text_encoder == text_encoder: {pipeline.text_encoder == text_encoder}')
 
@@ -334,7 +332,7 @@ def train(
 
                 # Sample a random timestep for each image
                 bsz = image_latents.shape[0]
-                timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=image_latents.device).long()
+                timesteps = torch.randint(0, config.train_sampling_steps, (bsz,), device=image_latents.device).long()
 
                 grad_norm = None
                 data_time_all += time.time() - data_time_start
@@ -456,7 +454,6 @@ def train(
                         diffuser=diffuser,
                         text_encoder=text_encoder,
                         tokenizer=tokenizer,
-                        scheduler=noise_scheduler,
                         )
                     if should_log_eval:
                         log_eval_images(
@@ -512,7 +509,6 @@ def train(
                 diffuser=diffuser,
                 text_encoder=text_encoder,
                 tokenizer=tokenizer,
-                scheduler=noise_scheduler,
                 )
             if should_log_eval:
                 log_eval_images(pipeline=pipeline, global_step=global_step)
@@ -600,7 +596,6 @@ def _get_image_gen_pipeline(
         diffuser, 
         text_encoder, 
         tokenizer,
-        scheduler,
         ):
     diffusers_transformer = convert_net_to_diffusers(
         state_dict=diffuser.state_dict(),
@@ -961,8 +956,6 @@ if __name__ == '__main__':
     for dataset in train_datasets + (val_datasets or []):
         dataset.tokenizer = tokenizer
     
-    # Load scheduler and models
-    noise_scheduler = DDPMScheduler.from_pretrained(pipeline_name, subfolder="scheduler")
     text_encoder = T5EncoderModel.from_pretrained(
         pipeline_name, subfolder="text_encoder", 
         torch_dtype=torch_dtype).to(accelerator.device)
@@ -1043,7 +1036,6 @@ if __name__ == '__main__':
         text_encoder=text_encoder,
         tokenizer=tokenizer,
         diffuser=diffuser,
-        noise_scheduler=noise_scheduler,
         train_dataloaders=train_dataloaders,
         val_dataloaders=val_dataloaders,
         optimizer=optimizer,
