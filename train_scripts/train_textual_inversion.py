@@ -292,14 +292,6 @@ def train(
         flush()
         logger.debug('finished w image gen pipeline')
 
-    # verify
-
-    # Log the initial values of the new token embeddings using .data
-    # new_token_indices = list(range(len(tokenizer) - len(placeholder_token_ids), len(tokenizer)))
-    # initial_embeddings = orig_embeds_params[new_token_indices].clone()
-    # print("Initial new token embeddings:", initial_embeddings)
-    #
-
     # train loop
     for epoch in range(start_epoch + 1, config.num_epochs + 1):
         logger.debug('start epoch')
@@ -408,22 +400,6 @@ def train(
                 global_step += 1
                 progress_bar.update(1)
                 data_time_start = time.time()
-
-                # verify change
-                # embedding_layer = text_encoder.get_input_embeddings()
-                # Check gradients for the new token indices
-                # grad_embeddings = embedding_layer.weight.grad[new_token_indices].clone().detach().to(accelerator.device)
-                # logger.info(f"Gradients for new token embeddings after backward pass: {grad_embeddings}")
-                # Log the updated values of the new token embeddings using .data
-            
-                # Calculate the Euclidean distance between initial and updated embeddings
-                # updated_embeddings = embedding_layer.weight.data[new_token_indices].clone().detach().to(accelerator.device)
-                # distance = torch.norm(initial_embeddings - updated_embeddings, dim=1)
-                # logger.info(f"Euclidean distance of new token embeddings after epoch {epoch + 1}: {distance}")
-
-                # Update the initial embeddings for the next check
-                # initial_embeddings = updated_embeddings.clone().detach()
-                #
 
                 # STEP END actions: save, log val loss, eval images, cmmd
                 if config.save_model_steps and global_step % config.save_model_steps == 0:
@@ -609,19 +585,19 @@ def _get_image_gen_pipeline(
                 transformer=diffusers_transformer,
                 text_encoder=text_encoder,
                 tokenizer=tokenizer,
-                scheduler=scheduler,
                 )
 
 def save_progress(text_encoder, placeholder_token_ids, accelerator, args, global_step, safe_serialization=True):
     logger.info("Saving embeddings")
     wait_for_everyone()
     if accelerator.is_main_process:
-        save_path = os.path.join(config.work_dir,
-                                'textual_inversions',
-                                f"{config.get('ti_subject', '')}_{global_step}.safetensors")
-        save_dir = os.path.dirname(save_path)
-        if not os.path.exists(save_dir):
-            os.makedirs(save_dir, exist_ok=True)
+        ti_dir = os.path.join(config.work_dir, 'textual_inversions')
+        save_path = os.path.join(ti_dir,
+                                f"embedding_{config.get('ti_subject', '')}_{global_step}.safetensors")
+        save_state_path = os.path.join(ti_dir,
+                                f"state_{config.get('ti_subject', '')}_{global_step}")
+        if not os.path.exists(ti_dir):
+            os.makedirs(ti_dir, exist_ok=True)
         learned_embeds = (
             accelerator.unwrap_model(text_encoder)
             .get_input_embeddings()
@@ -633,6 +609,8 @@ def save_progress(text_encoder, placeholder_token_ids, accelerator, args, global
             safetensors.torch.save_file(learned_embeds_dict, save_path, metadata={"format": "pt"})
         else:
             torch.save(learned_embeds_dict, save_path)
+
+        accelerator.save_state(save_state_path)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Process some integers.")
@@ -981,6 +959,8 @@ if __name__ == '__main__':
     diffuser = model
     # freeze diffuser
     diffuser.requires_grad_(False)
+    for name, param in diffuser.named_parameters():
+        logger.info(f'diffuser param: {name} requires_grad: {param.requires_grad}')
     # freeze text encoder
     for name, param in text_encoder.named_parameters():
         param.requires_grad = False
