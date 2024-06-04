@@ -527,7 +527,8 @@ def train(
             del pipeline
             flush()
 
-def load_ti_checkpoint(file_path, tokenizer, text_encoder):
+def load_ti_checkpoint(file_path):
+    logger.info(f'loading ti checkpoint from {file_path}')
     with safetensors.safe_open(file_path, framework="pt") as f:
         if len(f.keys()) > 1:
             raise ValueError(f"Expected only one key in the checkpoint file, but found {len(f.keys())} keys.")
@@ -537,30 +538,56 @@ def load_ti_checkpoint(file_path, tokenizer, text_encoder):
             logger.info(f'Loaded {key} with shape {data_dict[key].shape}')
     # load into text encoder
     token = next(iter(data_dict.keys()))
-    token_id = tokenizer.convert_tokens_to_ids(token)
+    # token_id = tokenizer.convert_tokens_to_ids(token)
     embedding = data_dict[token]
     if embedding.shape[0] > 1:
         logger.warn(f'More than 1 embedding found for token {token}. Using the first one.')
         embedding = embedding[0]
-    if token_id == tokenizer.unk_token_id:
-        # Token does not exist, add it
-        tokenizer.add_tokens([token])
-        logger.info(f"Token '{token}' added to tokenizer.")
-    else:
-        logger.info(f"Token '{token}' already exists in tokenizer. Loading embedding...")
+
+    return token, embedding
+
+def initialize_placeholder_token(args, tokenizer, text_encoder):
+    # Add the placeholder token in tokenizer
+    placeholder_token = args.placeholder_token
+    initializer_token = args.initializer_token
+    # get embedding for initializer token
+    init_token_ids = tokenizer.encode(initializer_token, add_special_tokens=False)
+    # Check if initializer_token is a single token or a sequence of tokens
+    if len(init_token_ids) > 1:
+        raise ValueError("The initializer token must be a single token.")
+    initializer_token_id = init_token_ids[0]
+    token_embeds = text_encoder.get_input_embeddings().weight.data
+    initial_embedding = token_embeds[initializer_token_id].clone()
+    return placeholder_token, initial_embedding
+
+
+def add_placeholder_token_and_embedding(token, embedding, tokenizer, text_encoder):
+    token_ids = tokenizer.convert_tokens_to_ids(token)
+    if len(token_ids) > 1:
+        raise ValueError(f"The placeholder token tokenized into {len(token_ids)} ids. Choose another placeholder_token")
+    token_id = token_ids[0]
     
-    # Check if token_id is larger than text_encoder's embedding size
+    if token_id != tokenizer.unk_token_id:
+        raise ValueError(f'The tokenizer already contains token {token}. Please pass a different placeholder_token.')
+    
+    num_added_tokens = tokenizer.add_tokens([token])
+    if num_added_tokens != 1:
+        raise ValueError(f"The tokenizer already contains the token {token}. Please pass a different `placeholder_token` that is not already in the tokenizer.")
+    
+    logger.info(f"Token '{token}' passed checks and added to tokenizer.")
+        
     if token_id >= text_encoder.shared.num_embeddings:
         # Resize the token embeddings in the text_encoder to accommodate the new token
         logger.info('Resizing token embeddings in text_encoder to accommodate new token...')
-        text_encoder.resize_token_embeddings(token_id + 1)
+        text_encoder.resize_token_embeddings(len(tokenizer), pad_to_multiple_of=128)
     else:
         logger.info('text_encoder already has enough token embeddings to accommodate new token.')
     
-    # Assign the provided embedding to the token's embedding in the text_encoder
+    # Initialise the newly added placeholder token with the embeddings of the initializer token
+    token_embeds = text_encoder.get_input_embeddings().weight
     with torch.no_grad():
-        text_encoder.shared.weight[token_id] = torch.tensor(embedding, dtype=text_encoder.shared.weight.dtype)
-        print(f"Embedding assigned to token '{token}'.")
+        token_embeds[token_id] = torch.tensor(embedding.clone(), dtype=text_encoder.shared.weight.dtype)
+        logger.info(f"Embedding at {token_id} assigned to token '{token}'.")
 
 
 def _get_image_gen_pipeline(
@@ -931,80 +958,31 @@ if __name__ == '__main__':
         torch_dtype=torch_dtype).to(accelerator.device)
     
     if args.ti_resume_from is not None:
-        load_ti_checkpoint(
+        placeholder_token, init_embedding = load_ti_checkpoint(
             file_path=args.ti_resume_from,
+        )
+    else:
+        placeholder_token, init_embedding = initialize_placeholder_token(
+            args=args,
+            tokenizer=tokenizer, 
             text_encoder=text_encoder,
-            tokenizer=tokenizer,
+            )
+
+    add_placeholder_token_and_embedding(
+        token=placeholder_token,
+        embedding=init_embedding,
+        tokenizer=tokenizer,
+        text_encoder=text_encoder,
         )
 
     diffuser = model
-
-    # convert model to diffusers
-    # diffuser = convert_net_to_diffusers(
-    #     state_dict=model.state_dict(),
-    #     image_size=image_size,
-    # )
-    
-    # Add the placeholder token in tokenizer
-    placeholder_tokens = [args.placeholder_token]
-
-    if args.num_vectors < 1:
-        raise ValueError(f"--num_vectors has to be larger or equal to 1, but is {args.num_vectors}")
-
-    # add dummy tokens for multi-vector
-    additional_tokens = []
-    for i in range(1, args.num_vectors):
-        additional_tokens.append(f"{args.placeholder_token}_{i}")
-    placeholder_tokens += additional_tokens
-
-    num_added_tokens = tokenizer.add_tokens(placeholder_tokens)
-    if num_added_tokens != args.num_vectors:
-        raise ValueError(
-            f"The tokenizer already contains the token {args.placeholder_token}. Please pass a different"
-            " `placeholder_token` that is not already in the tokenizer."
-        )
-
-    # Convert the initializer_token, placeholder_token to ids
-    token_ids = tokenizer.encode(args.initializer_token, add_special_tokens=False)
-    # Check if initializer_token is a single token or a sequence of tokens
-    if len(token_ids) > 1:
-        raise ValueError("The initializer token must be a single token.")
-
-    initializer_token_id = token_ids[0]
-    placeholder_token_ids = tokenizer.convert_tokens_to_ids(placeholder_tokens)
-
-    logger.info(f'placeholder_token_ids: {placeholder_token_ids}')
-
-    # Resize the token embeddings as we are adding new special tokens to the tokenizer
-    text_encoder.resize_token_embeddings(len(tokenizer))
-
-    # Initialise the newly added placeholder token with the embeddings of the initializer token
-    token_embeds = text_encoder.get_input_embeddings().weight.data
-    with torch.no_grad():
-        for token_id in placeholder_token_ids:
-            token_embeds[token_id] = token_embeds[initializer_token_id].clone()
-
-    # Freeze vae and unet
-    # vae.requires_grad_(False)
+    # freeze diffuser
     diffuser.requires_grad_(False)
-
-    # from original SD example:
-    # Freeze all parameters except for the token embeddings in text encoder
-    # text_encoder.text_model.encoder.requires_grad_(False)
-    # text_encoder.text_model.final_layer_norm.requires_grad_(False)
-    # text_encoder.text_model.embeddings.position_embedding.requires_grad_(False)
-
-    # From GPT adaptation:
-    # freeze everything
+    # freeze text encoder
     for name, param in text_encoder.named_parameters():
         param.requires_grad = False
     # unfreeze the token embeddings parameters
     text_encoder.get_input_embeddings().weight.requires_grad = True
-
-    # this verified that only shared weights (input embeddings) were unfrozen
-    # for name, param in text_encoder.named_parameters():
-    #     logger.info(f'requires_grad {name}: {param.requires_grad}')
-    
 
     if config.grad_checkpointing:
         # Keep unet in train mode if we are using gradient checkpointing to save memory.
@@ -1013,26 +991,6 @@ if __name__ == '__main__':
         text_encoder.gradient_checkpointing_enable()
         # diffuser grad checkpointing is setup in build_model
         
-
-    # if args.enable_xformers_memory_efficient_attention:
-    #     if is_xformers_available():
-    #         logger.info('xformers available. importing...')
-    #         import xformers
-
-    #         xformers_version = version.parse(xformers.__version__)
-    #         if xformers_version == version.parse("0.0.16"):
-    #             logger.warning(
-    #                 "xFormers 0.0.16 cannot be used for training in some GPUs. If you observe problems during training, please update xFormers to at least 0.0.17. See https://huggingface.co/docs/diffusers/main/en/optimization/xformers for more details."
-    #             )
-    #         diffuser.enable_xformers_memory_efficient_attention()
-    #     else:
-    #         raise ValueError("xformers is not available. Make sure it is installed correctly")
-
-    # Enable TF32 for faster training on Ampere GPUs,
-    # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
-    # if args.allow_tf32:
-    #     torch.backends.cuda.matmul.allow_tf32 = True
-
     if args.scale_lr:
         args.learning_rate = (
             args.learning_rate * config.gradient_accumulation_steps * config.train_batch_size * accelerator.num_processes
