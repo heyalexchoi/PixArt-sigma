@@ -525,6 +525,42 @@ def train(
             del pipeline
             flush()
 
+def load_ti_checkpoint(file_path, tokenizer, text_encoder):
+    with safetensors.safe_open(file_path, framework="pt") as f:
+        if len(f.keys()) > 1:
+            raise ValueError(f"Expected only one key in the checkpoint file, but found {len(f.keys())} keys.")
+        data_dict = {}
+        for key in f.keys():
+            data_dict[key] = f.get_tensor(key)
+            logger.info(f'Loaded {key} with shape {data_dict[key].shape}')
+    # load into text encoder
+    token = next(iter(data_dict.keys()))
+    token_id = tokenizer.convert_tokens_to_ids(token)
+    embedding = data_dict[token]
+    if embedding.shape[0] > 1:
+        logger.warn(f'More than 1 embedding found for token {token}. Using the first one.')
+        embedding = embedding[0]
+    if token_id == tokenizer.unk_token_id:
+        # Token does not exist, add it
+        tokenizer.add_tokens([token])
+        logger.info(f"Token '{token}' added to tokenizer.")
+    else:
+        logger.info(f"Token '{token}' already exists in tokenizer. Loading embedding...")
+    
+    # Check if token_id is larger than text_encoder's embedding size
+    if token_id >= text_encoder.shared.num_embeddings:
+        # Resize the token embeddings in the text_encoder to accommodate the new token
+        logger.info('Resizing token embeddings in text_encoder to accommodate new token...')
+        text_encoder.resize_token_embeddings(token_id + 1)
+    else:
+        logger.info('text_encoder already has enough token embeddings to accommodate new token.')
+    
+    # Assign the provided embedding to the token's embedding in the text_encoder
+    with torch.no_grad():
+        text_encoder.shared.weight[token_id] = torch.tensor(embedding, dtype=text_encoder.shared.weight.dtype)
+        print(f"Embedding assigned to token '{token}'.")
+
+
 def _get_image_gen_pipeline(
         diffuser, 
         text_encoder, 
@@ -604,7 +640,7 @@ def parse_args():
     parser.add_argument("--loss_report_name", type=str, default="loss")
     parser.add_argument("--placeholder_token", type=str, required=True)
     parser.add_argument("--initializer_token", type=str, required=True)
-    parser.add_argument("--num_vectors", type=int, default=1)
+    parser.add_argument("--num_vectors", type=int, default=1, choices=[1], help="Only 1 vector seems to work in T5")
     parser.add_argument("--adam_beta1", type=float, default=0.9, help="The beta1 parameter for the Adam optimizer.")
     parser.add_argument("--adam_beta2", type=float, default=0.999, help="The beta2 parameter for the Adam optimizer.")
     parser.add_argument("--adam_weight_decay", type=float, default=1e-2, help="Weight decay to use.")
