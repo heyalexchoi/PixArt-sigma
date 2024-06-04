@@ -611,7 +611,8 @@ def parse_args():
     parser.add_argument("config", type=str, help="config")
     parser.add_argument("--cloud", action='store_true', default=False, help="cloud or local machine")
     parser.add_argument('--work-dir', help='the dir to save logs and models')
-    parser.add_argument('--resume-from', help='the dir to resume the training')
+    parser.add_argument('--resume-from', help='diffuser checkpoint path to resume from')
+    parser.add_argument('--ti_resume_from', help='ti checkpoint path to resume from')
     parser.add_argument('--load-from', default=None, help='the dir to load a ckpt for training')
     parser.add_argument('--local-rank', type=int, default=-1)
     parser.add_argument('--local_rank', type=int, default=-1)
@@ -696,6 +697,8 @@ if __name__ == '__main__':
             load_ema=False,
             resume_optimizer=True,
             resume_lr_scheduler=True)
+    if args.ti_resume_from is not None and not os.path.exists(args.ti_resume_from):
+        raise ValueError(f"ti_resume_from path {args.ti_resume_from} does not exist.")
     if args.debug:
         config.log_interval = 1
         config.train_batch_size = 2
@@ -927,12 +930,12 @@ if __name__ == '__main__':
         pipeline_name, subfolder="text_encoder", 
         torch_dtype=torch_dtype).to(accelerator.device)
     
-    # logger.info('noise_scheduler.config: ', noise_scheduler.config)
-    
-    # do I need this?
-    # vae = AutoencoderKL.from_pretrained(
-    #     pipeline_name, subfolder="vae",
-    # )
+    if args.ti_resume_from is not None:
+        load_ti_checkpoint(
+            file_path=args.ti_resume_from,
+            text_encoder=text_encoder,
+            tokenizer=tokenizer,
+        )
 
     diffuser = model
 
