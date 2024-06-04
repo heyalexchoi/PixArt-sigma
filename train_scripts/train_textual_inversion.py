@@ -225,6 +225,7 @@ def log_validation_loss(
 
 def train(
         accelerator,
+        placeholder_token_ids,
         text_encoder,
         tokenizer,
         diffuser,
@@ -357,14 +358,14 @@ def train(
                     lr_scheduler.step()
 
                 # Let's make sure we don't update any embedding weights besides the newly added token
-                index_no_updates = torch.ones((len(tokenizer),), dtype=torch.bool)
+                index_no_updates = torch.ones((text_encoder.get_input_embeddings().weight.size(0),), dtype=torch.bool)
                 index_no_updates[min(placeholder_token_ids) : max(placeholder_token_ids) + 1] = False
 
                 with torch.no_grad():
                     accelerator.unwrap_model(text_encoder).get_input_embeddings().weight[
                         index_no_updates
                     ] = orig_embeds_params[index_no_updates]
-
+                
                 gathered_losses = accelerator.gather(loss).detach().cpu().numpy()
                 lr = lr_scheduler.get_last_lr()[0]
                 
@@ -562,21 +563,24 @@ def initialize_placeholder_token(args, tokenizer, text_encoder):
 
 
 def add_placeholder_token_and_embedding(token, embedding, tokenizer, text_encoder):
-    token_ids = tokenizer.convert_tokens_to_ids(token)
-    if len(token_ids) > 1:
-        raise ValueError(f"The placeholder token tokenized into {len(token_ids)} ids. Choose another placeholder_token")
-    token_id = token_ids[0]
+    # check if this token exists
+    prospective_token_id = tokenizer.convert_tokens_to_ids(token)
     
-    if token_id != tokenizer.unk_token_id:
+    if prospective_token_id != tokenizer.unk_token_id:
         raise ValueError(f'The tokenizer already contains token {token}. Please pass a different placeholder_token.')
     
+    # add the new token to tokenizer
     num_added_tokens = tokenizer.add_tokens([token])
+
     if num_added_tokens != 1:
-        raise ValueError(f"The tokenizer already contains the token {token}. Please pass a different `placeholder_token` that is not already in the tokenizer.")
+        raise ValueError(f"The tokenizer already contained the token {token}. Please pass a different `placeholder_token` that is not already in the tokenizer.")
     
     logger.info(f"Token '{token}' passed checks and added to tokenizer.")
-        
-    if token_id >= text_encoder.shared.num_embeddings:
+    
+    placeholder_token_id = tokenizer.convert_tokens_to_ids(token)
+
+    # resize text encoder if needed
+    if placeholder_token_id >= text_encoder.shared.num_embeddings:
         # Resize the token embeddings in the text_encoder to accommodate the new token
         logger.info('Resizing token embeddings in text_encoder to accommodate new token...')
         text_encoder.resize_token_embeddings(len(tokenizer), pad_to_multiple_of=128)
@@ -586,8 +590,10 @@ def add_placeholder_token_and_embedding(token, embedding, tokenizer, text_encode
     # Initialise the newly added placeholder token with the embeddings of the initializer token
     token_embeds = text_encoder.get_input_embeddings().weight
     with torch.no_grad():
-        token_embeds[token_id] = torch.tensor(embedding.clone(), dtype=text_encoder.shared.weight.dtype)
-        logger.info(f"Embedding at {token_id} assigned to token '{token}'.")
+        token_embeds[placeholder_token_id] = torch.tensor(embedding.clone(), dtype=text_encoder.shared.weight.dtype)
+        logger.info(f"Embedding at {placeholder_token_id} assigned to token '{token}'.")
+
+    return placeholder_token_id
 
 
 def _get_image_gen_pipeline(
@@ -669,7 +675,7 @@ def parse_args():
     )
     parser.add_argument("--loss_report_name", type=str, default="loss")
     parser.add_argument("--placeholder_token", type=str, required=True)
-    parser.add_argument("--initializer_token", type=str, required=True)
+    parser.add_argument("--initializer_token", type=str)
     parser.add_argument("--num_vectors", type=int, default=1, choices=[1], help="Only 1 vector seems to work in T5")
     parser.add_argument("--adam_beta1", type=float, default=0.9, help="The beta1 parameter for the Adam optimizer.")
     parser.add_argument("--adam_beta2", type=float, default=0.999, help="The beta2 parameter for the Adam optimizer.")
@@ -709,6 +715,10 @@ def parse_args():
         help="Scale the learning rate by the number of GPUs, gradient accumulation steps, and batch size.",
     )
     args = parser.parse_args()
+
+    if args.ti_resume_from is None and args.initializer_token is None:
+        raise ValueError("initializer_token is required when ti_resume_from is not provided.")
+    
     return args
 
 
@@ -968,7 +978,7 @@ if __name__ == '__main__':
             text_encoder=text_encoder,
             )
 
-    add_placeholder_token_and_embedding(
+    placeholder_token_id = add_placeholder_token_and_embedding(
         token=placeholder_token,
         embedding=init_embedding,
         tokenizer=tokenizer,
@@ -1029,6 +1039,7 @@ if __name__ == '__main__':
     
     train(
         accelerator=accelerator,
+        placeholder_token_ids=[placeholder_token_id],
         text_encoder=text_encoder,
         tokenizer=tokenizer,
         diffuser=diffuser,
