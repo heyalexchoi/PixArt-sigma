@@ -88,6 +88,7 @@ def generate_images(
         guidance_scale=4.5,
         output_type='pil',
         clean_caption=False, # default for pipeline is True but this removes subject tokens, eg '@name'
+        num_workers=0,
     ):
     """
     batch generates images from caption embeddings with batch dim
@@ -119,7 +120,12 @@ def generate_images(
             prompts=prompts,
         )
 
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    dataloader = DataLoader(
+        dataset, 
+        batch_size=batch_size, 
+        shuffle=False,
+        num_workers=num_workers,
+        )
     dataloader = accelerator.prepare(dataloader)
 
     pipeline = accelerator.prepare(pipeline)

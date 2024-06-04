@@ -268,6 +268,7 @@ def train(
             tokenizer=tokenizer,
             scheduler=noise_scheduler,
             )
+        logger.info(f'pipeline.text_encoder == text_encoder: {pipeline.text_encoder == text_encoder}')
 
         if config.eval.at_start:
             log_eval_images(
@@ -549,6 +550,7 @@ def initialize_placeholder_token(args, tokenizer, text_encoder):
     # Add the placeholder token in tokenizer
     placeholder_token = args.placeholder_token
     initializer_token = args.initializer_token
+    logger.info(f'initializing placeholder_token: {placeholder_token} using initializer_token: {initializer_token}')
     # get embedding for initializer token
     init_token_ids = tokenizer.encode(initializer_token, add_special_tokens=False)
     # Check if initializer_token is a single token or a sequence of tokens
@@ -586,7 +588,7 @@ def add_placeholder_token_and_embedding(token, embedding, tokenizer, text_encode
         logger.info('text_encoder already has enough token embeddings to accommodate new token.')
     
     # Initialise the newly added placeholder token with the embeddings of the initializer token
-    token_embeds = text_encoder.get_input_embeddings().weight
+    token_embeds = text_encoder.get_input_embeddings().weight.data
     with torch.no_grad():
         token_embeds[placeholder_token_id] = torch.tensor(embedding.clone(), dtype=text_encoder.shared.weight.dtype)
         logger.info(f"Embedding at {placeholder_token_id} assigned to token '{token}'.")

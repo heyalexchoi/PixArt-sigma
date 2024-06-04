@@ -73,6 +73,7 @@ def log_cmmd(
     data_root = config.data_root
     t5_save_dir = config.t5_save_dir
     max_token_length = config.max_token_length
+    num_workers = config.num_workers
     
     # generate images using the text captions
     logger.info("Generating CMMD images using the text captions...")
@@ -141,7 +142,7 @@ def log_cmmd(
             max_token_length=config.max_token_length,
             prompts=prompts,
             negative_prompt=negative_prompt,
-
+            num_workers=num_workers,
         )
         orig_image_paths = [os.path.join(data_root, item['path']) for item in items]
         # resize original images
@@ -209,6 +210,7 @@ def log_eval_images(
     eval_sample_prompts = config.eval.prompts
     eval_negative_prompt = config.eval.get('negative_prompt')
     max_token_length = config.max_token_length
+    num_workers = config.num_workers
 
     prompt_embeds_list = []
     prompt_attention_mask_list = []
@@ -273,6 +275,7 @@ def log_eval_images(
         guidance_scale=guidance_scale,
         device=accelerator.device,
         max_token_length=max_token_length,
+        num_workers=num_workers,
     )
 
     flush()
@@ -301,7 +304,7 @@ def log_eval_images(
 
 
 def prepare_for_inference(accelerator, model):
-    model = accelerator.unwrap_model(model)
+    # model = accelerator.unwrap_model(model)
     model.eval()
     return model
 
