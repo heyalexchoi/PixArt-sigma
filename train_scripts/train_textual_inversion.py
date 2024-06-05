@@ -406,6 +406,8 @@ def train(
                     save_progress(
                         global_step=global_step,
                         text_encoder=text_encoder,
+                        optimizer=optimizer,
+                        lr_scheduler=lr_scheduler,
                         placeholder_token_ids=placeholder_token_ids,
                         accelerator=accelerator,
                         args=args,
@@ -459,6 +461,8 @@ def train(
             save_progress(
                         global_step=global_step,
                         text_encoder=text_encoder,
+                        optimizer=optimizer,
+                        lr_scheduler=lr_scheduler,
                         placeholder_token_ids=placeholder_token_ids,
                         accelerator=accelerator,
                         args=args,
@@ -587,7 +591,16 @@ def _get_image_gen_pipeline(
                 tokenizer=tokenizer,
                 )
 
-def save_progress(text_encoder, placeholder_token_ids, accelerator, args, global_step, safe_serialization=True):
+def save_progress(
+        text_encoder, 
+        placeholder_token_ids, 
+        accelerator, 
+        args, 
+        global_step,
+        optimizer,
+        lr_scheduler,
+        safe_serialization=True,
+        ):
     logger.info("Saving embeddings")
     wait_for_everyone()
     if accelerator.is_main_process:
@@ -595,7 +608,7 @@ def save_progress(text_encoder, placeholder_token_ids, accelerator, args, global
         save_path = os.path.join(ti_dir,
                                 f"embedding_{config.get('ti_subject', '')}_{global_step}.safetensors")
         save_state_path = os.path.join(ti_dir,
-                                f"state_{config.get('ti_subject', '')}_{global_step}")
+                                f"state_{config.get('ti_subject', '')}_{global_step}.pt")
         if not os.path.exists(ti_dir):
             os.makedirs(ti_dir, exist_ok=True)
         learned_embeds = (
@@ -611,10 +624,10 @@ def save_progress(text_encoder, placeholder_token_ids, accelerator, args, global
             torch.save(learned_embeds_dict, save_path)
         
         state_dict = {
-            "optimizer": accelerator.optimizer.state_dict(),
-            "scheduler": accelerator.scheduler.state_dict()
+            "optimizer": optimizer.state_dict(),
+            "lr_scheduler": lr_scheduler.state_dict()
         }
-        accelerator.save_state(state_dict, save_state_path)
+        torch.save(state_dict, save_state_path)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Process some integers.")
@@ -914,6 +927,8 @@ if __name__ == '__main__':
     # total_steps = len(train_dataloader) * config.num_epochs
     steps_per_epoch = sum(len(dataloader) for dataloader in train_dataloaders)
     total_steps =  steps_per_epoch * config.num_epochs
+
+    logger.info(f'steps_per_epoch: {steps_per_epoch}, total_steps: {total_steps}')
 
     if config.resume_from is not None and config.resume_from['checkpoint'] is not None:
         logger.info(f"resuming from checkpoint {config.resume_from['checkpoint']}")
