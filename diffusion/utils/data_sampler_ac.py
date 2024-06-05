@@ -7,8 +7,6 @@ from copy import deepcopy
 from diffusion.utils.logger_ac import get_logger
 
 logger = get_logger(__name__)
-logger.setLevel('DEBUG')
-
 
 class AspectRatioBatchSampler(BatchSampler):
     """A sampler wrapper for grouping images with similar aspect ratio into a same batch.

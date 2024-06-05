@@ -109,12 +109,13 @@ class TextualInversionDataset(InternalDataMSSigmaAC):
         self.tokenizer = tokenizer
 
     def __getitem__(self, index):
-        img, text, _, data_info = super().__getitem__(index)
+        img, _, _, data_info = super().__getitem__(index)
 
         # example = {
         #     'text': text,
         # }
-
+        # quick and dirty here. if this works, should init w placeholder token
+        text = 'a photo of @reneeherbert_'
         # example["input_ids"] = self.tokenizer(
         #     text,
         #     padding="max_length",
@@ -133,7 +134,6 @@ class TextualInversionDataset(InternalDataMSSigmaAC):
         # squeeze to get rid of extra batch dimension
         input_ids = tokenized_text.input_ids.squeeze(0)
         attention_mask = tokenized_text.attention_mask.squeeze(0)
-
         return img, input_ids, attention_mask, data_info
 
 
