@@ -609,8 +609,12 @@ def save_progress(text_encoder, placeholder_token_ids, accelerator, args, global
             safetensors.torch.save_file(learned_embeds_dict, save_path, metadata={"format": "pt"})
         else:
             torch.save(learned_embeds_dict, save_path)
-
-        accelerator.save_state(save_state_path)
+        
+        state_dict = {
+            "optimizer": accelerator.optimizer.state_dict(),
+            "scheduler": accelerator.scheduler.state_dict()
+        }
+        accelerator.save_state(state_dict, save_state_path)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Process some integers.")
