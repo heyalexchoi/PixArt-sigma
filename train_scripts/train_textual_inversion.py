@@ -485,16 +485,28 @@ def train(
                                 accelerator=accelerator,
                                 model=text_encoder,
                                 )
+
             pipeline = _get_image_gen_pipeline(
                 diffuser=diffuser,
                 text_encoder=text_encoder,
                 tokenizer=tokenizer,
                 )
+
             if should_log_eval:
-                log_eval_images(pipeline=pipeline, global_step=global_step)
+                log_eval_images(
+                    accelerator=accelerator,
+                    config=config,
+                    pipeline=pipeline, 
+                    global_step=global_step
+                    )
             
             if should_log_cmmd:
-                log_cmmd(pipeline=pipeline, global_step=global_step)
+                log_cmmd(
+                    pipeline=pipeline, 
+                    accelerator=accelerator,
+                    config=config,
+                    global_step=global_step,
+                    )
             
             text_encoder = prepare_for_training(
                             accelerator=accelerator,
