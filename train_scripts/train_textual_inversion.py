@@ -341,7 +341,8 @@ def train(
 
                     if accelerator.sync_gradients:
                         grad_norm = accelerator.clip_grad_norm_(
-                            text_encoder.get_input_embeddings().weight, 
+                            # text_encoder.get_input_embeddings().weight, 
+                            text_encoder.get_input_embeddings().parameters(), 
                             config.gradient_clip,
                             )
 
@@ -349,13 +350,13 @@ def train(
                     lr_scheduler.step()
 
                 # Let's make sure we don't update any embedding weights besides the newly added token
-                index_no_updates = torch.ones((text_encoder.get_input_embeddings().weight.size(0),), dtype=torch.bool)
-                index_no_updates[min(placeholder_token_ids) : max(placeholder_token_ids) + 1] = False
+                # index_no_updates = torch.ones((text_encoder.get_input_embeddings().weight.size(0),), dtype=torch.bool)
+                # index_no_updates[min(placeholder_token_ids) : max(placeholder_token_ids) + 1] = False
 
-                with torch.no_grad():
-                    accelerator.unwrap_model(text_encoder).get_input_embeddings().weight[
-                        index_no_updates
-                    ] = orig_embeds_params[index_no_updates]
+                # with torch.no_grad():
+                #     accelerator.unwrap_model(text_encoder).get_input_embeddings().weight[
+                #         index_no_updates
+                #     ] = orig_embeds_params[index_no_updates]
                 
                 gathered_losses = accelerator.gather(loss).detach().cpu().numpy()
                 lr = lr_scheduler.get_last_lr()[0]
@@ -541,10 +542,16 @@ def initialize_placeholder_token(args, tokenizer, text_encoder):
     logger.info(f'initializing placeholder_token: {placeholder_token} using initializer_token: {initializer_token}')
     # get embedding for initializer token
     init_token_ids = tokenizer.encode(initializer_token, add_special_tokens=False)
+    
     # Check if initializer_token is a single token or a sequence of tokens
-    if len(init_token_ids) > 1:
-        raise ValueError("The initializer token must be a single token.")
+    if len(init_token_ids) != 1:
+        raise ValueError(f"The initializer token must be a single token. Got {len(init_token_ids)} tokens.")
+    
+    if init_token_ids == tokenizer.unk_token_id:
+        raise ValueError(f'The tokenizer does not know initializer token {initializer_token}. Please pass a different initializer_token.')
+    
     initializer_token_id = init_token_ids[0]
+    logger.info(f'initializer_token_id: {initializer_token_id}')
     token_embeds = text_encoder.get_input_embeddings().weight.data
     initial_embedding = token_embeds[initializer_token_id].clone()
     return placeholder_token, initial_embedding
@@ -1013,7 +1020,8 @@ if __name__ == '__main__':
     optimizer = torch.optim.AdamW(
         # from original SD example:
         # text_encoder.get_input_embeddings().parameters(),  # only optimize the embeddings
-        [text_encoder.get_input_embeddings().weight],
+        # [text_encoder.get_input_embeddings().weight],
+        text_encoder.get_input_embeddings().parameters(),
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
