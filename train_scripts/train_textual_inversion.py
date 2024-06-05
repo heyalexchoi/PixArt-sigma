@@ -325,7 +325,6 @@ def train(
 
                 logger.debug(f'batch len z: {len(z)}\n'
                             f'batch aspect_ratio: {data_info["aspect_ratio"]}\n'
-                            f'batch npy_path_basename: {data_info["npy_path_basename"]}\n'
                             )
 
                 # Sample a random timestep for each image
@@ -764,6 +763,7 @@ if __name__ == '__main__':
 
     if args.verbose:
         import logging
+        logger.setLevel(logging.DEBUG)
         for handler in logger.handlers:
             if isinstance(handler, logging.StreamHandler):
                 handler.setLevel(logging.DEBUG)
