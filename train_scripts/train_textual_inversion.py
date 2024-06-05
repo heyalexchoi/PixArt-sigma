@@ -347,7 +347,6 @@ def train(
 
                     if accelerator.sync_gradients:
                         grad_norm = accelerator.clip_grad_norm_(
-                            # text_encoder.get_input_embeddings().weight, 
                             text_encoder.get_input_embeddings().parameters(), 
                             config.gradient_clip,
                             )
@@ -356,13 +355,15 @@ def train(
                     lr_scheduler.step()
 
                 # Let's make sure we don't update any embedding weights besides the newly added token
-                # index_no_updates = torch.ones((text_encoder.get_input_embeddings().weight.size(0),), dtype=torch.bool)
-                # index_no_updates[min(placeholder_token_ids) : max(placeholder_token_ids) + 1] = False
-
-                # with torch.no_grad():
-                #     accelerator.unwrap_model(text_encoder).get_input_embeddings().weight[
-                #         index_no_updates
-                #     ] = orig_embeds_params[index_no_updates]
+                # selection of all input embeddings that defaults to True
+                index_no_updates = torch.ones((text_encoder.get_input_embeddings().weight.size(0),), dtype=torch.bool)
+                # set the placeholder token ids to False
+                index_no_updates[min(placeholder_token_ids) : max(placeholder_token_ids) + 1] = False
+                with torch.no_grad():
+                    # restore all non-placeholder token embeddings to original values
+                    accelerator.unwrap_model(text_encoder).get_input_embeddings().weight[
+                        index_no_updates
+                    ] = orig_embeds_params[index_no_updates]
                 
                 gathered_losses = accelerator.gather(loss).detach().cpu().numpy()
                 lr = lr_scheduler.get_last_lr()[0]
@@ -1038,10 +1039,7 @@ if __name__ == '__main__':
 
     # Initialize the optimizer
     optimizer = torch.optim.AdamW(
-        # from original SD example:
-        # text_encoder.get_input_embeddings().parameters(),  # only optimize the embeddings
-        # [text_encoder.get_input_embeddings().weight],
-        text_encoder.get_input_embeddings().parameters(),
+        text_encoder.get_input_embeddings().parameters(), # only optimize the embeddings
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
