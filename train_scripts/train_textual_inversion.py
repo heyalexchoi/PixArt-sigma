@@ -294,10 +294,11 @@ def train(
 
     # train loop
     for epoch in range(start_epoch + 1, config.num_epochs + 1):
-        logger.debug('start epoch')
+        logger.debug(f'start epoch {epoch}')
         data_time_start= time.time()
         data_time_all = 0
         for train_dataloader in train_dataloaders:
+            logger.debug(f'train_dataloader.dataset.name: {train_dataloader.dataset.name} len: {len(train_dataloader)}')
             for step, batch in enumerate(train_dataloader):
                 if step < skip_step:
                     global_step += 1
@@ -321,6 +322,11 @@ def train(
                 y_mask = batch[2]
 
                 data_info = batch[3]
+
+                logger.debug(f'batch len z: {len(z)}\n'
+                            f'batch aspect_ratio: {data_info["aspect_ratio"]}\n'
+                            f'batch npy_path_basename: {data_info["npy_path_basename"]}\n'
+                            )
 
                 # Sample a random timestep for each image
                 bsz = image_latents.shape[0]
@@ -723,6 +729,12 @@ def parse_args():
         default=False,
         help="Scale the learning rate by the number of GPUs, gradient accumulation steps, and batch size.",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        default=False,
+        help="Debug log level",
+    )
     args = parser.parse_args()
 
     if args.ti_resume_from is None and args.initializer_token is None:
@@ -748,6 +760,14 @@ if __name__ == '__main__':
     if args.debug:
         config.log_interval = 1
         config.train_batch_size = 2
+
+    if args.verbose:
+        import logging
+        for handler in logger.handlers:
+            if isinstance(handler, logging.StreamHandler):
+                handler.setLevel(logging.DEBUG)
+        config.log_interval = 1
+        # TODO: attach stream handler to root logger and set log level debug
 
     os.umask(0o000)
     os.makedirs(config.work_dir, exist_ok=True)

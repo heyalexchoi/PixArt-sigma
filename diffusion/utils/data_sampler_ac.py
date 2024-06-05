@@ -7,6 +7,7 @@ from copy import deepcopy
 from diffusion.utils.logger_ac import get_logger
 
 logger = get_logger(__name__)
+logger.setLevel('DEBUG')
 
 
 class AspectRatioBatchSampler(BatchSampler):
@@ -47,10 +48,10 @@ class AspectRatioBatchSampler(BatchSampler):
         # buckets for each aspect ratio
         self._aspect_ratio_buckets = {ratio: [] for ratio in aspect_ratios.keys()}
         self.current_available_bucket_keys =  [str(k) for k, v in self.ratio_nums_gt.items() if v >= valid_num]
-        logger.info(f"Using valid_num={valid_num} in config file. Available {len(self.current_available_bucket_keys)} aspect_ratios: {self.current_available_bucket_keys}")
+        logger.debug(f"Using valid_num={valid_num} in config file. Available {len(self.current_available_bucket_keys)} aspect_ratios: {self.current_available_bucket_keys}")
 
     def __iter__(self) -> Sequence[int]:
-        logger.debug(f'len(self.sampler): {len(self.sampler)} batch_size: {self.batch_size} ')
+        logger.debug(f'BatchSampler.__iter__ len(self.sampler): {len(self.sampler)} batch_size: {self.batch_size} ')
         for idx in self.sampler:
             data_info = self.dataset.get_data_info(idx)
             height, width =  data_info['height'], data_info['width']
@@ -63,7 +64,7 @@ class AspectRatioBatchSampler(BatchSampler):
             bucket.append(idx)
             # yield a batch of indices in the same aspect ratio group
             if len(bucket) == self.batch_size:
-                logger.debug(f"Yield a batch of indices in the same aspect ratio group: {closest_ratio}")
+                logger.debug(f"BatchSampler.__iter__ Yield a batch of indices in the same aspect ratio group: {closest_ratio}")
                 yield bucket[:]
                 bucket.clear()
 
@@ -72,15 +73,15 @@ class AspectRatioBatchSampler(BatchSampler):
             while len(bucket) > 0:
                 if len(bucket) <= self.batch_size:
                     if not self.drop_last:
-                        logger.debug(f"not drop last, yield undersized bucket w {len(bucket)} items. ratio: {ratio}")
+                        logger.debug(f"BatchSampler not drop_last. yield undersized bucket w {len(bucket)} items. ratio: {ratio}")
                         yield bucket[:]
-                    logger.debug(f"drop last, yield nothing. clear bucket ratio: {ratio}")
+                    logger.debug(f"BatchSampler drop_last, yield nothing. clear bucket. ratio: {ratio}")
                     bucket.clear()
                 else:
-                    logger.debug(f"yield bucket full bucket len {len(bucket[:self.batch_size])}")
+                    logger.debug(f"BatchSampler yield bucket full bucket len {len(bucket[:self.batch_size])}")
                     yield bucket[:self.batch_size]
-                    bucket = bucket[self.batch_size:]
-
+                    # bucket = bucket[self.batch_size:]
+                    self._aspect_ratio_buckets[ratio] = bucket[self.batch_size:]  # Correctly update the bucket
 
 class BalancedAspectRatioBatchSampler(AspectRatioBatchSampler):
     def __init__(self, *args, **kwargs):
