@@ -109,13 +109,13 @@ class TextualInversionDataset(InternalDataMSSigmaAC):
         self.tokenizer = tokenizer
 
     def __getitem__(self, index):
-        img, _, _, data_info = super().__getitem__(index)
+        img, text, _, data_info = super().__getitem__(index)
 
         # example = {
         #     'text': text,
         # }
         # quick and dirty here. if this works, should init w placeholder token
-        text = 'a photo of @reneeherbert_'
+        # text = 'a photo of @reneeherbert_'
         # example["input_ids"] = self.tokenizer(
         #     text,
         #     padding="max_length",
@@ -916,7 +916,7 @@ if __name__ == '__main__':
         for dataset in train_datasets:
             # not dropping last here
             batch_sampler = AspectRatioBatchSampler(sampler=RandomSampler(dataset), dataset=dataset,
-                                                    batch_size=config.train_batch_size, aspect_ratios=dataset.aspect_ratio, drop_last=False,
+                                                    batch_size=config.train_batch_size, aspect_ratios=dataset.aspect_ratio, drop_last=True,
                                                     ratio_nums=dataset.ratio_nums, config=config, valid_num=config.valid_num)
             train_dataloader = build_dataloader(dataset, batch_sampler=batch_sampler, num_workers=config.num_workers)
             train_dataloaders.append(train_dataloader)
