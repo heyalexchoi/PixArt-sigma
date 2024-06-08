@@ -62,7 +62,7 @@ import json
 from diffusion.utils.text_embeddings import encode_prompts, get_path_for_encoded_prompt
 from diffusion.utils.image_evaluation import generate_images, get_image_gen_pipeline
 from diffusion.utils.train import log_eval_images, log_cmmd, prepare_for_inference, \
-    prepare_for_training
+    prepare_for_training, clamp_grad_norm_
         # , get_step_bucket_loss
 
 from diffusion.model.nets.diffusers import convert_net_to_diffusers
@@ -292,6 +292,11 @@ def train(
         flush()
         logger.debug('finished w image gen pipeline')
 
+    # selector for non-target input embeddings that we will prevent from udpating
+    input_embeddings = text_encoder.get_input_embeddings()
+    index_no_updates = torch.ones((input_embeddings.weight.size(0),), dtype=torch.bool)
+    index_no_updates[min(placeholder_token_ids) : max(placeholder_token_ids) + 1] = False
+    
     # train loop
     for epoch in range(start_epoch + 1, config.num_epochs + 1):
         logger.debug(f'start epoch {epoch}')
@@ -345,24 +350,32 @@ def train(
                     accelerator.backward(loss)
 
                     if accelerator.sync_gradients:
-                        grad_norm = accelerator.clip_grad_norm_(
-                            text_encoder.get_input_embeddings().parameters(), 
-                            config.gradient_clip,
+                        # grad_norm = accelerator.clip_grad_norm_(
+                        #     text_encoder.get_input_embeddings().parameters(), 
+                        #     config.gradient_clip,
+                        #     )
+                        # zero gradients for non-placeholder token embeddings
+                        input_embeddings.weight.grad[index_no_updates] = 0
+                        grad_norm = clamp_grad_norm_(
+                            input_embeddings.parameters(),
+                            min_norm=config.get('min_grad_norm', 0.0),
+                            max_norm=config.gradient_clip,
                             )
 
                     optimizer.step()
                     lr_scheduler.step()
 
+                # zero the grads before optimizer step instead
                 # Let's make sure we don't update any embedding weights besides the newly added token
                 # selection of all input embeddings that defaults to True
-                index_no_updates = torch.ones((text_encoder.get_input_embeddings().weight.size(0),), dtype=torch.bool)
-                # set the placeholder token ids to False
-                index_no_updates[min(placeholder_token_ids) : max(placeholder_token_ids) + 1] = False
-                with torch.no_grad():
+                # index_no_updates = torch.ones((text_encoder.get_input_embeddings().weight.size(0),), dtype=torch.bool)
+                # # set the placeholder token ids to False
+                # index_no_updates[min(placeholder_token_ids) : max(placeholder_token_ids) + 1] = False
+                # with torch.no_grad():
                     # restore all non-placeholder token embeddings to original values
-                    accelerator.unwrap_model(text_encoder).get_input_embeddings().weight[
-                        index_no_updates
-                    ] = orig_embeds_params[index_no_updates]
+                    # accelerator.unwrap_model(text_encoder).get_input_embeddings().weight[
+                    #     index_no_updates
+                    # ] = orig_embeds_params[index_no_updates]
                 
                 gathered_losses = accelerator.gather(loss).detach().cpu().numpy()
                 lr = lr_scheduler.get_last_lr()[0]
