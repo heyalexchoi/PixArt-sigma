@@ -296,7 +296,7 @@ def train(
     input_embeddings = text_encoder.get_input_embeddings()
     index_no_updates = torch.ones((input_embeddings.weight.size(0),), dtype=torch.bool)
     index_no_updates[min(placeholder_token_ids) : max(placeholder_token_ids) + 1] = False
-    
+
     # train loop
     for epoch in range(start_epoch + 1, config.num_epochs + 1):
         logger.debug(f'start epoch {epoch}')
@@ -376,6 +376,21 @@ def train(
                     # accelerator.unwrap_model(text_encoder).get_input_embeddings().weight[
                     #     index_no_updates
                     # ] = orig_embeds_params[index_no_updates]
+
+                # log changes. MSE between current embeddings and original embeddings for both target and non-target
+                def compare_embeddings(current_embeds, original_embeds, mask):
+                    # Calculate the mean squared difference for the given mask
+                    diff = current_embeds[mask] - original_embeds[mask]
+                    mse = (diff ** 2).mean().item()
+                    return mse
+
+                mse_placeholder = compare_embeddings(input_embeddings.weight, orig_embeds_params, ~index_no_updates)
+                mse_no_updates = compare_embeddings(input_embeddings.weight, orig_embeds_params, index_no_updates)
+                logs.update({
+                    'mse_placeholder': mse_placeholder,
+                    'mse_no_updates': mse_no_updates,
+                })
+                # end log changes
                 
                 gathered_losses = accelerator.gather(loss).detach().cpu().numpy()
                 lr = lr_scheduler.get_last_lr()[0]
