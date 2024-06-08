@@ -365,6 +365,8 @@ def train(
                     optimizer.step()
                     lr_scheduler.step()
 
+
+                logs = {}
                 # zero the grads before optimizer step instead
                 # Let's make sure we don't update any embedding weights besides the newly added token
                 # selection of all input embeddings that defaults to True
@@ -396,7 +398,7 @@ def train(
                 lr = lr_scheduler.get_last_lr()[0]
                 
                 mean_gathered_losses = gathered_losses.mean().item()
-                logs = {'loss': mean_gathered_losses}
+                logs.update({'loss': mean_gathered_losses})
                 dataset_name = train_dataloader.dataset.name
                 if dataset_name:
                     logs.update({
